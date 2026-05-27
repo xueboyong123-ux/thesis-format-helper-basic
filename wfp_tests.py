@@ -19,6 +19,7 @@ from wfp_core import (
     BLANK_LINE_MODE_DELETE_SINGLE,
     BLANK_LINE_MODE_KEEP_SINGLE,
     BLANK_LINE_MODE_PRESERVE,
+    FormatReport,
     LegacyConversionUnavailable,
     WordProcessor,
     check_first_line_indent,
@@ -232,6 +233,109 @@ class FirstLineIndentTests(unittest.TestCase):
         self.assertTrue(check_first_line_indent(output.paragraphs[0], 2.0, 0.2))
 
 
+class FormatReportTests(unittest.TestCase):
+    def test_to_text_outputs_key_fields(self):
+        report = FormatReport(
+            input_file="input.docx",
+            output_file="output_formatted.docx",
+            total_paragraphs=3,
+            total_tables=1,
+            body_paragraphs=2,
+            headings_detected=1,
+            captions_detected=1,
+            first_line_indent_fixed=2,
+            headings_fixed=1,
+            tables_fixed=1,
+            captions_fixed=1,
+            skipped_toc_paragraphs=1,
+            skipped_reference_paragraphs=1,
+            skipped_table_paragraphs=2,
+            report_file="output_format_report.txt",
+        )
+
+        text = report.to_text()
+
+        self.assertIn("输入文件：input.docx", text)
+        self.assertIn("输出文件：output_formatted.docx", text)
+        self.assertIn("处理时间：", text)
+        self.assertIn("总段落数：3", text)
+        self.assertIn("修复首行缩进：2", text)
+        self.assertIn("报告文件：output_format_report.txt", text)
+        self.assertIn("Warnings：无", text)
+        self.assertIn("Errors：无", text)
+
+    def test_add_warning_and_add_error(self):
+        report = FormatReport()
+
+        report.add_warning("无法准确统计某字段")
+        report.add_error("报告写入失败")
+
+        self.assertEqual(report.warnings, ["无法准确统计某字段"])
+        self.assertEqual(report.errors, ["报告写入失败"])
+        text = report.to_text()
+        self.assertIn("- 无法准确统计某字段", text)
+        self.assertIn("- 报告写入失败", text)
+
+
+class FormatReportFileTests(unittest.TestCase):
+    def _write_source_doc(self, source):
+        doc = Document()
+        doc.add_paragraph("一、绪论")
+        doc.add_paragraph("这是一个普通正文段落，用于验证报告生成。")
+        doc.add_paragraph("目录")
+        doc.add_paragraph("第一章 绪论........1")
+        doc.add_paragraph("[1] 张三. 文献标题. 期刊, 2024.")
+        table = doc.add_table(rows=1, cols=1)
+        table.cell(0, 0).text = "表格内正文"
+        doc.save(source)
+
+    def test_report_file_is_generated_with_utf8(self):
+        with tempfile.TemporaryDirectory(prefix="wfp_report_test_") as tmpdir:
+            source = Path(tmpdir) / "source.docx"
+            output = Path(tmpdir) / "source_formatted.docx"
+            self._write_source_doc(source)
+
+            report = WordProcessor(DEFAULT_CONFIG.copy()).format_document(str(source), str(output))
+            report_path = Path(report.report_file)
+
+            self.assertTrue(output.exists())
+            self.assertTrue(report_path.exists())
+            self.assertEqual(report_path.name, "source_format_report.txt")
+            text = report_path.read_text(encoding="utf-8")
+            self.assertIn("输入文件：", text)
+            self.assertIn("统计摘要", text)
+            self.assertIn("总段落数：", text)
+
+    def test_report_file_is_not_generated_when_disabled(self):
+        with tempfile.TemporaryDirectory(prefix="wfp_report_disabled_") as tmpdir:
+            source = Path(tmpdir) / "source.docx"
+            output = Path(tmpdir) / "source_formatted.docx"
+            self._write_source_doc(source)
+
+            config = DEFAULT_CONFIG.copy()
+            config["enable_format_report"] = False
+            report = WordProcessor(config).format_document(str(source), str(output))
+
+            self.assertTrue(output.exists())
+            self.assertIsNone(report.report_file)
+            self.assertFalse((Path(tmpdir) / "source_format_report.txt").exists())
+
+    def test_old_config_without_report_fields_is_compatible(self):
+        with tempfile.TemporaryDirectory(prefix="wfp_old_report_config_") as tmpdir:
+            source = Path(tmpdir) / "source.docx"
+            output = Path(tmpdir) / "source_formatted.docx"
+            self._write_source_doc(source)
+
+            old_config = DEFAULT_CONFIG.copy()
+            old_config.pop("enable_format_report", None)
+            old_config.pop("report_level", None)
+
+            report = WordProcessor(old_config).format_document(str(source), str(output))
+
+            self.assertTrue(output.exists())
+            self.assertTrue(Path(report.report_file).exists())
+
+
 class GUIFirstLineIndentConfigTests(unittest.TestCase):
     def setUp(self):
         self.root = tk.Tk()
@@ -271,6 +375,8 @@ class GUIFirstLineIndentConfigTests(unittest.TestCase):
         self.assertEqual(saved["first_line_indent_chars"], 2.0)
         self.assertEqual(saved["first_line_indent_tolerance_chars"], 0.2)
         self.assertEqual(saved["first_line_indent_scope"], "body_only")
+        self.assertTrue(saved["enable_format_report"])
+        self.assertEqual(saved["report_level"], "normal")
 
     def test_old_config_load_uses_first_line_indent_defaults(self):
         old_config = DEFAULT_CONFIG.copy()
@@ -289,6 +395,8 @@ class GUIFirstLineIndentConfigTests(unittest.TestCase):
         self.assertEqual(collected["first_line_indent_chars"], 2.0)
         self.assertEqual(collected["first_line_indent_tolerance_chars"], 0.2)
         self.assertEqual(collected["first_line_indent_scope"], "body_only")
+        self.assertTrue(collected["enable_format_report"])
+        self.assertEqual(collected["report_level"], "normal")
 
     def test_invalid_first_line_indent_chars_is_blocked_on_save(self):
         self.app.entries["first_line_indent_chars"].delete(0, tk.END)

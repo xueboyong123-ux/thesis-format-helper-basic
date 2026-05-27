@@ -8,6 +8,8 @@ can reuse the same formatter implementation. This copy is maintained for the
 
 import logging
 import os
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 import re
 import shutil
@@ -228,6 +230,72 @@ def check_first_line_indent(paragraph, target_chars, tolerance_chars):
     except (TypeError, ValueError):
         return False
     return abs(actual_chars - target_chars) <= tolerance_chars
+
+
+@dataclass
+class FormatReport:
+    input_file: str = ""
+    output_file: str = ""
+    total_paragraphs: int = 0
+    total_tables: int = 0
+    body_paragraphs: int = 0
+    headings_detected: int = 0
+    captions_detected: int = 0
+    first_line_indent_fixed: int = 0
+    headings_fixed: int = 0
+    tables_fixed: int = 0
+    captions_fixed: int = 0
+    skipped_toc_paragraphs: int = 0
+    skipped_reference_paragraphs: int = 0
+    skipped_table_paragraphs: int = 0
+    warnings: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    processed_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    report_file: str | None = None
+
+    def add_warning(self, message):
+        if message:
+            self.warnings.append(str(message))
+
+    def add_error(self, message):
+        if message:
+            self.errors.append(str(message))
+
+    def to_text(self):
+        warning_lines = ["无"] if not self.warnings else [f"- {item}" for item in self.warnings]
+        error_lines = ["无"] if not self.errors else [f"- {item}" for item in self.errors]
+        lines = [
+            "格式检查报告 FormatReport",
+            "",
+            f"输入文件：{self.input_file}",
+            f"输出文件：{self.output_file}",
+            f"处理时间：{self.processed_at}",
+            f"报告文件：{self.report_file or '未生成'}",
+            "",
+            "统计摘要",
+            f"总段落数：{self.total_paragraphs}",
+            f"总表格数：{self.total_tables}",
+            f"识别正文段落：{self.body_paragraphs}",
+            f"识别标题数量：{self.headings_detected}",
+            f"识别图表标题：{self.captions_detected}",
+            f"修复首行缩进：{self.first_line_indent_fixed}",
+            f"修复标题数量：{self.headings_fixed}",
+            f"修复表格数量：{self.tables_fixed}",
+            f"修复图表标题：{self.captions_fixed}",
+            f"跳过目录段落：{self.skipped_toc_paragraphs}",
+            f"跳过参考文献段落：{self.skipped_reference_paragraphs}",
+            f"跳过表格内段落：{self.skipped_table_paragraphs}",
+            "",
+            "Warnings：" + ("" if self.warnings else "无"),
+        ]
+        if self.warnings:
+            lines.extend(warning_lines)
+        lines.append("")
+        lines.append("Errors：" + ("" if self.errors else "无"))
+        if self.errors:
+            lines.extend(error_lines)
+        lines.append("")
+        return "\n".join(lines)
 
 
 class LegacyConversionUnavailable(RuntimeError):
@@ -1413,12 +1481,12 @@ class WordProcessor:
     def _format_tables(self, doc, apply_color=True):
         if not self.config.get('enable_table_formatting', False):
             self._log("表格自动调整未启用，跳过表格内容格式化。")
-            return
+            return 0
 
         tables = list(doc.tables)
         if not tables:
             self._log("未发现表格，跳过表格内容格式化。")
-            return
+            return 0
 
         table_font = self.config.get('table_font', self.config.get('body_font', '仿宋_GB2312'))
         table_header_font = self.config.get('table_header_font', table_font)
@@ -1495,7 +1563,36 @@ class WordProcessor:
                                 para.alignment = WD_ALIGN_PARAGRAPH.CENTER
                             else:
                                 para.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    
+        return len(tables)
+
+    @staticmethod
+    def _count_table_paragraphs(doc):
+        count = 0
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    count += len(cell.paragraphs)
+        return count
+
+    @staticmethod
+    def _make_report_path(output_path):
+        output = Path(output_path)
+        stem = output.stem
+        if stem.endswith("_formatted"):
+            stem = stem[:-len("_formatted")]
+        return output.with_name(f"{stem}_format_report.txt")
+
+    def _write_format_report(self, report):
+        if not self.config.get('enable_format_report', True):
+            report.report_file = None
+            return
+        report_path = self._make_report_path(report.output_file)
+        report.report_file = str(report_path)
+        try:
+            report_path.write_text(report.to_text(), encoding="utf-8")
+        except Exception as exc:
+            report.add_warning(f"报告文件生成失败：{exc}")
+
     def _find_title_and_subtitle_paragraphs(self, doc, is_from_txt, start_index=0):
         """
         查找题目和副标题段落的索引范围
@@ -1643,18 +1740,26 @@ class WordProcessor:
         return title_indices, subtitle_indices
 
     def format_document(self, input_path, output_path):
+        report = FormatReport(input_file=str(input_path), output_file=str(output_path))
+        if self.config.get('report_level', 'normal') != 'normal':
+            report.add_warning("report_level 目前仅支持 normal，已按 normal 生成报告。")
+
         processing_path, is_from_txt = self.convert_to_docx(input_path)
         if not is_from_txt: self._preprocess_com_tasks(processing_path)
-        
+
         doc = Document(processing_path)
 
         if self.config.get('normalize_punctuation', False):
             symbol_changes = self._normalize_document_symbols(doc)
             self._log(f"符号标准化完成，共修复 {symbol_changes} 个段落/表格单元格。")
-        
+
         all_blocks = list(self._iter_block_items(doc))
         processed_indices = set()
-        
+        caption_indices = set()
+        report.total_paragraphs = len(doc.paragraphs) + self._count_table_paragraphs(doc)
+        report.total_tables = len(doc.tables)
+        report.skipped_table_paragraphs = self._count_table_paragraphs(doc)
+
         apply_color = not is_from_txt
 
         if not is_from_txt:
@@ -1682,9 +1787,12 @@ class WordProcessor:
                                 config_size = self.config[config_size_key]
                                 self._apply_font_to_runs(potential_caption, config_font, config_size, set_color=apply_color)
                                 processed_indices.add(i)
+                                caption_indices.add(i)
+                                report.captions_detected += 1
+                                report.captions_fixed += 1
                                 caption_found = True
-                            break 
-                    if caption_found: break 
+                            break
+                    if caption_found: break
 
         # 查找主标题和副标题
         title_indices, subtitle_indices = self._find_title_and_subtitle_paragraphs(doc, is_from_txt)
@@ -1694,6 +1802,7 @@ class WordProcessor:
             processed_indices.add(idx)
         for idx in subtitle_indices:
             processed_indices.add(idx)
+        report.headings_detected += len(title_indices)
 
         self._log("预扫描完成，开始逐段格式化...")
         if self.config['set_outline']:
@@ -1774,18 +1883,23 @@ class WordProcessor:
 
                 if RE_HEADING_H1.match(text_to_check):
                     self._log(f"  > 文字识别为一级标题: \"{para_text_preview}...\"")
+                    report.headings_detected += 1
                     self._apply_font_to_runs(para, self.config['h1_font'], self.config['h1_size'], set_color=apply_color)
                 elif RE_HEADING_H2.match(text_to_check):
                     self._log(f"  > 文字识别为二级标题: \"{para_text_preview}...\"")
+                    report.headings_detected += 1
                     self._apply_font_to_runs(para, self.config['h2_font'], self.config['h2_size'], set_color=apply_color)
                 elif RE_HEADING_H3.match(text_to_check):
                     self._log(f"  > 文字识别为三级标题: \"{para_text_preview}...\"")
+                    report.headings_detected += 1
                     self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
                 elif RE_HEADING_H4.match(text_to_check):
                     self._log(f"  > 文字识别为四级标题: \"{para_text_preview}...\"")
+                    report.headings_detected += 1
                     self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
                 elif text_to_check:
                     self._log(f"  > 文字识别为正文: \"{para_text_preview}...\"")
+                    report.body_paragraphs += 1
                     self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
 
                 block_idx += 1
@@ -1907,8 +2021,19 @@ class WordProcessor:
                 or is_equation_paragraph(para)
             ):
                 self._log(f"段落 {current_block_num}: 非正文段落 - \"{para_text_preview}...\"")
+                is_caption = is_caption_paragraph(para)
+                is_reference = is_reference_paragraph(para, paragraph_context)
+                is_toc = is_toc_paragraph(para, paragraph_context)
+                if is_caption and block_idx not in caption_indices:
+                    report.captions_detected += 1
+                    report.captions_fixed += 1
+                    caption_indices.add(block_idx)
+                if is_reference:
+                    report.skipped_reference_paragraphs += 1
+                if is_toc:
+                    report.skipped_toc_paragraphs += 1
                 _clear_first_line_indent_chars(para)
-                if is_caption_paragraph(para):
+                if is_caption:
                     caption_kind = 'figure' if text_to_check_stripped.startswith('图') else 'table'
                     self._apply_font_to_runs(
                         para,
@@ -1925,6 +2050,8 @@ class WordProcessor:
 
             elif RE_HEADING_H1.match(text_to_check):
                 self._log(f"段落 {current_block_num}: 一级标题 - \"{para_text_preview}...\"")
+                report.headings_detected += 1
+                report.headings_fixed += 1
                 self._strip_leading_whitespace(para)
                 self._format_heading(para, 1)
                 self._apply_font_to_runs(para, self.config['h1_font'], self.config['h1_size'], set_color=apply_color)
@@ -1933,6 +2060,8 @@ class WordProcessor:
 
             elif RE_HEADING_H2.match(text_to_check):
                 self._log(f"段落 {current_block_num}: 二级标题 - \"{para_text_preview}...\"")
+                report.headings_detected += 1
+                report.headings_fixed += 1
                 self._strip_leading_whitespace(para)
                 
                 parts = para.text.split('。', 1)
@@ -2002,6 +2131,8 @@ class WordProcessor:
                     
             elif RE_HEADING_H3.match(text_to_check):
                 self._log(f"段落 {current_block_num}: 三级标题 - \"{para_text_preview}...\"")
+                report.headings_detected += 1
+                report.headings_fixed += 1
                 self._strip_leading_whitespace(para)
                 self._format_heading(para, 3)
                 self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
@@ -2010,6 +2141,8 @@ class WordProcessor:
                 
             elif RE_HEADING_H4.match(text_to_check):
                 self._log(f"段落 {current_block_num}: 四级标题 - \"{para_text_preview}...\"")
+                report.headings_detected += 1
+                report.headings_fixed += 1
                 self._strip_leading_whitespace(para)
                 self._format_heading(para, 4)
                 self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
@@ -2020,34 +2153,51 @@ class WordProcessor:
                 if para.alignment in [WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.RIGHT]:
                     align_text = "居中" if para.alignment == WD_ALIGN_PARAGRAPH.CENTER else "右对齐"
                     self._log(f"段落 {current_block_num}: {align_text}正文 - 保留原对齐")
+                    report.body_paragraphs += 1
                     self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
                     self._reset_pagination_properties(para)
                 elif leading_space_count > 5:
                     self._log(f"段落 {current_block_num}: 正文 (保留前导空格) - \"{para_text_preview}...\"")
+                    report.body_paragraphs += 1
+                    if self.config.get('enable_first_line_indent', True):
+                        report.first_line_indent_fixed += 1
                     self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
                     self._apply_text_indent_and_align(para)
                     self._reset_pagination_properties(para)
                 elif (para.paragraph_format.first_line_indent is None or para.paragraph_format.first_line_indent.pt == 0) and leading_space_count == 0:
                     self._log(f"段落 {current_block_num}: 正文 (保留0缩进) - \"{para_text_preview}...\"")
+                    report.body_paragraphs += 1
+                    if self.config.get('enable_first_line_indent', True):
+                        report.first_line_indent_fixed += 1
                     self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
                     self._apply_text_indent_and_align(para)
                     self._reset_pagination_properties(para)
                 else:
                     self._log(f"段落 {current_block_num}: 正文 (应用标准缩进) - \"{para_text_preview}...\"")
+                    report.body_paragraphs += 1
+                    if self.config.get('enable_first_line_indent', True):
+                        report.first_line_indent_fixed += 1
                     self._strip_leading_whitespace(para)
                     self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
                     self._apply_text_indent_and_align(para)
                     self._reset_pagination_properties(para)
             else:
                 self._log(f"段落 {current_block_num}: 正文 (源自TXT，强制缩进) - \"{para_text_preview}...\"")
+                report.body_paragraphs += 1
+                if self.config.get('enable_first_line_indent', True):
+                    report.first_line_indent_fixed += 1
                 self._strip_leading_whitespace(para)
                 self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
                 self._apply_text_indent_and_align(para)
                 self._reset_pagination_properties(para)
             
             block_idx += 1
-        
-        self._format_tables(doc, apply_color=apply_color)
+
+        report.tables_fixed = self._format_tables(doc, apply_color=apply_color)
         self._apply_page_setup(doc, is_from_txt=is_from_txt)
         self._log("正在保存最终文档...")
         doc.save(output_path)
+        self._write_format_report(report)
+        if report.report_file:
+            self._log(f"格式检查报告已生成: {report.report_file}")
+        return report

@@ -37,6 +37,7 @@ DEFAULT_CONFIG = {
     'enable_first_line_indent': True, 'first_line_indent_chars': 2.0,
     'first_line_indent_tolerance_chars': 0.2, 'first_line_indent_scope': 'body_only',
     'ui_scale': 1.0, 'remember_window_geometry': True,
+    'enable_format_report': True, 'report_level': 'normal',
     'set_outline': True, 'enable_attachment_formatting': True,
     'force_a4': False, 'use_custom_english_font': False, 'english_font': 'Times New Roman',
     'blank_line_mode': DEFAULT_BLANK_LINE_MODE, 'normalize_punctuation': False,

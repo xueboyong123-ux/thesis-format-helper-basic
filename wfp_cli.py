@@ -100,6 +100,8 @@ CONFIG_DESCRIPTIONS = {
     "table_smart_align": ("表格智能对齐", "true/false"),
     "table_unified_borders": ("统一表格边框", "true/false"),
     "table_border_size_pt": ("表格边框粗细", "pt"),
+    "enable_format_report": ("生成格式检查报告", "true/false"),
+    "report_level": ("格式检查报告级别", "normal"),
 }
 
 
@@ -233,6 +235,12 @@ def load_config_with_overrides(args):
     return normalize_config(config), source
 
 
+def print_report_summary(report):
+    print(f"输出文件路径: {report.output_file}", file=sys.stderr)
+    print(f"报告文件路径: {report.report_file or '未生成'}", file=sys.stderr)
+    print(f"warning/error 数量: {len(report.warnings)}/{len(report.errors)}", file=sys.stderr)
+
+
 def is_supported_file(path):
     path = Path(path)
     return path.is_file() and not path.name.startswith("~") and path.suffix.lower() in SUPPORTED_EXTENSIONS
@@ -352,8 +360,9 @@ def format_paths(args):
                     if log:
                         log(f"开始处理 {index}/{len(jobs)}: {job.source}")
                     job.output.parent.mkdir(parents=True, exist_ok=True)
-                    processor.format_document(str(job.source), str(job.output))
+                    report = processor.format_document(str(job.source), str(job.output))
                     print(str(job.output.resolve()))
+                    print_report_summary(report)
                 except LegacyConversionUnavailable as exc:
                     skipped.append(job.source)
                     print(f"已跳过: {job.source}: {exc}", file=sys.stderr)
@@ -387,6 +396,7 @@ def show_config(args):
             "enable_table_formatting=true 启用表格内容自动调整",
             "use_custom_english_font=true 并设置 english_font，可单独指定数字和字母字体，默认 Times New Roman",
             "normalize_punctuation=true 启用符号标准化",
+            "enable_format_report=true 在输出目录生成格式检查报告 txt",
         ],
         "config": {},
     }

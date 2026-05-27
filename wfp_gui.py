@@ -152,6 +152,8 @@ class WordFormatterGUI:
         self.use_custom_english_font_var = tk.BooleanVar(value=self.default_params['use_custom_english_font'])
         self.normalize_punctuation_var = tk.BooleanVar(value=self.default_params['normalize_punctuation'])
         self.enable_first_line_indent_var = tk.BooleanVar(value=self.default_params['enable_first_line_indent'])
+        self.enable_format_report = self.default_params['enable_format_report']
+        self.report_level = self.default_params['report_level']
         self.ui_scale_var = tk.StringVar(value=_ui_scale_to_label(self.ui_scale))
         self.remember_window_geometry_var = tk.BooleanVar(
             value=bool(self.startup_config.get(
@@ -753,6 +755,8 @@ class WordFormatterGUI:
         self.use_custom_english_font_var.set(loaded_config.get('use_custom_english_font', False))
         self.normalize_punctuation_var.set(loaded_config.get('normalize_punctuation', False))
         self.enable_first_line_indent_var.set(loaded_config.get('enable_first_line_indent', True))
+        self.enable_format_report = bool(loaded_config.get('enable_format_report', True))
+        self.report_level = loaded_config.get('report_level', 'normal') or 'normal'
         loaded_config['ui_scale'] = validate_ui_scale(loaded_config.get('ui_scale'))
         self.ui_scale_var.set(_ui_scale_to_label(loaded_config['ui_scale']))
         self.remember_window_geometry_var.set(bool(loaded_config.get('remember_window_geometry', True)))
@@ -808,6 +812,8 @@ class WordFormatterGUI:
         config['use_custom_english_font'] = self.use_custom_english_font_var.get()
         config['normalize_punctuation'] = self.normalize_punctuation_var.get()
         config['enable_first_line_indent'] = self.enable_first_line_indent_var.get()
+        config['enable_format_report'] = self.enable_format_report
+        config['report_level'] = self.report_level
         config['ui_scale'] = _ui_scale_from_label(self.ui_scale_var.get())
         config['remember_window_geometry'] = self.remember_window_geometry_var.get()
         config['enable_table_formatting'] = self.enable_table_var.get()
@@ -1114,6 +1120,20 @@ Word文档智能排版工具 v2.7.4 - 使用说明
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _log_format_report_summary(self, report):
+        self.log_to_debug_window(
+            "\n【排版完成】\n"
+            f"输入文件：{report.input_file}\n"
+            f"输出文件：{report.output_file}\n"
+            f"检查段落：{report.total_paragraphs}\n"
+            f"检查表格：{report.total_tables}\n"
+            f"识别正文段落：{report.body_paragraphs}\n"
+            f"修复首行缩进：{report.first_line_indent_fixed}\n"
+            f"跳过目录段落：{report.skipped_toc_paragraphs}\n"
+            f"跳过参考文献：{report.skipped_reference_paragraphs}\n"
+            f"报告文件：{report.report_file or '未生成'}"
+        )
+
     def _process_files(self, processor, file_list, output_dir):
         success_count, fail_count, skipped_count = 0, 0, 0
         total = len(file_list)
@@ -1124,8 +1144,9 @@ Word文档智能排版工具 v2.7.4 - 使用说明
                 self.log_to_debug_window(f"\n--- 开始处理文件 {i}/{total}: {base_name} ---")
                 output_name = os.path.splitext(base_name)[0]
                 output_path = os.path.join(output_dir, f"{output_name}_formatted.docx")
-                processor.format_document(input_path, output_path)
+                report = processor.format_document(input_path, output_path)
                 self.log_to_debug_window(f"✅ 文件处理成功，已保存至: {output_path}")
+                self._log_format_report_summary(report)
                 success_count += 1
             except LegacyConversionUnavailable as e:
                 self.log_to_debug_window(f"\n已跳过旧格式文件 {base_name}：\n{e}")
@@ -1160,8 +1181,9 @@ Word文档智能排版工具 v2.7.4 - 使用说明
                 tmp.write(text_content)
 
             self.log_to_debug_window("\n--- 开始处理输入的文本 ---")
-            processor.format_document(temp_file_path, output_path)
+            report = processor.format_document(temp_file_path, output_path)
             self._set_progress(100, "完成")
+            self._log_format_report_summary(report)
             self.log_to_debug_window("\n🎉 排版全部完成！")
 
             def show_done(path=output_path):
