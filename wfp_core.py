@@ -94,10 +94,65 @@ RE_REFERENCE_ENTRY = re.compile(r'^(?:\[\d+\]|［\d+］)')
 RE_TOC_TITLE = re.compile(r'^(目录|目\s*录|Contents?)$', re.IGNORECASE)
 RE_TOC_ENTRY = re.compile(r'.+(?:\.{3,}|…{2,}|·{3,})\s*\d+\s*$')
 RE_EQUATION_TEXT = re.compile(r'^[\(\[]?\d*[\)\]]?\s*[A-Za-z0-9_{}\^\+\-\*/=<>≤≥×÷∑√πα-ωΑ-Ω\s]+$')
+RE_THESIS_CHINESE_ABSTRACT = re.compile(r'^(?:摘\s*要|摘要[:：].*)$')
+RE_THESIS_ENGLISH_ABSTRACT = re.compile(r'^(?:ABSTRACT|Abstract|英文摘要)$', re.IGNORECASE)
+RE_THESIS_KEYWORDS = re.compile(r'^(?:关键词|关键字|Keywords|Key\s+words)\s*[:：]', re.IGNORECASE)
+RE_THESIS_TOC_TITLE = re.compile(r'^(?:目录|Contents?)$', re.IGNORECASE)
+RE_THESIS_TOC_ENTRY = re.compile(r'^.+(?:\.{3,}|…{2,}|·{3,})\s*\d+\s*$')
+RE_THESIS_REFERENCES_HEADING = re.compile(r'^(?:参考文献|References?)$', re.IGNORECASE)
+RE_THESIS_REFERENCE_ITEM = re.compile(r'^(?:\[\d+\]|［\d+］|\d+[\.、])\s+\S+')
+RE_THESIS_ACKNOWLEDGEMENT = re.compile(r'^(?:致谢|谢辞)$')
+RE_THESIS_APPENDIX = re.compile(r'^(?:附录(?:\s*[A-Za-z0-9一二三四五六七八九十]+)?|Appendix(?:\s+[A-Za-z0-9]+)?)$', re.IGNORECASE)
+RE_THESIS_HEADING = re.compile(
+    r'^(?:第\s*(?:\d+|[一二三四五六七八九十百千万]+)\s*章(?:\s+.+)?|'
+    r'[一二三四五六七八九十]+、\S+|'
+    r'\d+(?:\.\d+){0,2}\s+\S+|'
+    r'\d+(?:\.\d+){0,2}$)'
+)
+RE_THESIS_FIGURE_CAPTION = re.compile(r'^(?:图\s*\d+(?:[-.]\d+)*\s+\S+|Figure\s+\d+(?:[-.]\d+)*\s+\S+)', re.IGNORECASE)
+RE_THESIS_TABLE_CAPTION = re.compile(r'^(?:表\s*\d+(?:[-.]\d+)*\s+\S+|Table\s+\d+(?:[-.]\d+)*\s+\S+)', re.IGNORECASE)
+RE_THESIS_EQUATION_NUMBER = re.compile(r'^[（(]\s*\d+(?:[-.]\d+)*\s*[）)]$')
+RE_THESIS_EQUATION_TRAILING_NUMBER = re.compile(r'[（(]\s*\d+(?:[-.]\d+)*\s*[）)]$')
+CAPTION_NUMBER_SEP_PATTERN = r'[-.－]'
+CAPTION_SUBFIGURE_PATTERN = r'[\(（]\s*[A-Za-z]\s*[\)）]'
+RE_FIGURE_CAPTION_NUMBER = re.compile(
+    r'^\s*(?P<label>图|Figure|Fig\.)[\s\u3000]*'
+    r'(?P<first>\d+)'
+    r'(?:[\s\u3000]*[-.－][\s\u3000]*(?P<second>\d+))?'
+    r'(?P<sub>[\(（]\s*[A-Za-z]\s*[\)）])?'
+    r'(?P<trail>\s+|[\u3000]+|$|(?=[\u4e00-\u9fff]))'
+    r'(?P<title>.*)$',
+    re.IGNORECASE,
+)
+RE_TABLE_CAPTION_NUMBER = re.compile(
+    r'^\s*(?P<label>表|Table)[\s\u3000]*'
+    r'(?P<first>\d+)'
+    r'(?:[\s\u3000]*[-.－][\s\u3000]*(?P<second>\d+))?'
+    r'(?P<trail>\s+|[\u3000]+|$)'
+    r'(?P<title>.*)$',
+    re.IGNORECASE,
+)
+RE_FIGURE_REFERENCE = re.compile(
+    r'(?:如|见|由|参见|根据)?\s*(?:图|Figure|Fig\.)\s*'
+    r'(?P<number>\d+(?:\s*[-.－]\s*\d+)?(?:\s*[\(（]\s*[A-Za-z]\s*[\)）])?)',
+    re.IGNORECASE,
+)
+RE_TABLE_REFERENCE = re.compile(
+    r'(?:如|见|由|参见|根据)?\s*(?:表|Table)\s*'
+    r'(?P<number>\d+(?:\s*[-.－]\s*\d+)?)',
+    re.IGNORECASE,
+)
+CAPTION_BODY_REFERENCE_STARTS = ('所示', '可知', '为', '中', '显示', '说明')
 
 
 def _paragraph_text(paragraph):
     return (getattr(paragraph, 'text', '') or '').strip()
+
+
+def normalize_paragraph_text(text):
+    text = "" if text is None else str(text)
+    text = text.replace("\u3000", " ")
+    return re.sub(r'\s+', ' ', text).strip()
 
 
 def _paragraph_ind(paragraph):
@@ -109,6 +164,409 @@ def _paragraph_ind(paragraph):
 
 def _paragraph_in_table(paragraph):
     return isinstance(getattr(paragraph, '_parent', None), _Cell)
+
+
+def is_table_cell_paragraph(paragraph):
+    return _paragraph_in_table(paragraph)
+
+
+def _new_thesis_context(context=None):
+    context = dict(context or {})
+    defaults = {
+        'current_section': 'unknown',
+        'in_toc': False,
+        'in_references': False,
+        'in_chinese_abstract': False,
+        'in_english_abstract': False,
+        'in_appendix': False,
+        'heading_count': 0,
+        'figure_caption_count': 0,
+        'table_caption_count': 0,
+        'reference_item_count': 0,
+        'toc_paragraph_count': 0,
+        'equation_count': 0,
+        'protected_paragraph_count': 0,
+        'sections_detected': set(),
+    }
+    for key, value in defaults.items():
+        if key not in context:
+            context[key] = set() if isinstance(value, set) else value
+    return context
+
+
+def is_thesis_mode(config):
+    config = config or {}
+    return (
+        str(config.get('document_mode', 'general')).lower() == 'thesis'
+        or bool(config.get('thesis_mode_enabled', False))
+    )
+
+
+def normalize_caption_search_window(config):
+    try:
+        window = int((config or {}).get('caption_search_window', 3))
+    except (TypeError, ValueError):
+        window = 3
+    return window if 1 <= window <= 5 else 3
+
+
+def normalize_caption_numbering_mode(config):
+    mode = str((config or {}).get('caption_numbering_mode', 'auto')).lower()
+    return mode if mode in ('auto', 'chapter', 'continuous') else 'auto'
+
+
+def iter_block_items(parent):
+    parent_elm = parent.element.body if isinstance(parent, _Document) else parent._tc
+    for child in parent_elm.iterchildren():
+        if isinstance(child, CT_P):
+            yield Paragraph(child, parent)
+        elif isinstance(child, CT_Tbl):
+            yield Table(child, parent)
+
+
+def _canonical_caption_number(number_text):
+    text = normalize_paragraph_text(number_text)
+    text = text.replace('－', '-').replace('.', '-')
+    text = re.sub(r'\s*-\s*', '-', text)
+    text = re.sub(r'\s+', '', text)
+    text = text.replace('（', '(').replace('）', ')')
+    return text.lower()
+
+
+def _normalize_reference_number(number_text):
+    text = normalize_paragraph_text(number_text)
+    text = text.replace('－', '-')
+    text = re.sub(r'\s*([-\.])\s*', r'\1', text)
+    text = re.sub(r'\s+', '', text)
+    text = text.replace('（', '(').replace('）', ')')
+    return text.lower()
+
+
+def _extract_subfigure_suffix(raw_sub):
+    if not raw_sub:
+        return None
+    match = re.search(r'[A-Za-z]', raw_sub)
+    return match.group(0).lower() if match else None
+
+
+def _caption_record_from_match(match, expected_label):
+    title = normalize_paragraph_text(match.group('title') or '')
+    trail = match.group('trail') or ''
+    if not title:
+        return None
+    if not trail.strip() and title.startswith(CAPTION_BODY_REFERENCE_STARTS):
+        return None
+
+    label = match.group('label')
+    first = int(match.group('first'))
+    second = match.group('second')
+    sub = _extract_subfigure_suffix(match.groupdict().get('sub'))
+    raw_number = match.group('first')
+    mode = 'continuous'
+    chapter = None
+    number = first
+    if second is not None:
+        chapter = first
+        number = int(second)
+        mode = 'chapter'
+        raw_number = f"{first}-{number}"
+    raw = f"{label}{raw_number}{f'({sub})' if sub else ''}"
+    key = f"{chapter}-{number}" if mode == 'chapter' else str(number)
+    full_key = f"{key}({sub})" if sub else key
+    return {
+        'raw': raw,
+        'label': expected_label,
+        'chapter': chapter,
+        'number': number,
+        'sub': sub,
+        'mode': mode,
+        'key': key,
+        'full_key': full_key,
+        'title': title,
+    }
+
+
+def parse_figure_caption_number(text):
+    match = RE_FIGURE_CAPTION_NUMBER.match(normalize_paragraph_text(text))
+    if not match:
+        return None
+    return _caption_record_from_match(match, '图')
+
+
+def parse_table_caption_number(text):
+    match = RE_TABLE_CAPTION_NUMBER.match(normalize_paragraph_text(text))
+    if not match:
+        return None
+    return _caption_record_from_match(match, '表')
+
+
+def detect_inline_image_paragraph(paragraph):
+    if not isinstance(paragraph, Paragraph):
+        return False
+    return (
+        paragraph._p.find('.//' + qn('wp:inline')) is not None
+        or paragraph._p.find('.//' + qn('w:pict')) is not None
+    )
+
+
+def _detect_floating_image_paragraph(paragraph):
+    if not isinstance(paragraph, Paragraph):
+        return False
+    return paragraph._p.find('.//' + qn('wp:anchor')) is not None
+
+
+def _non_empty_paragraphs_near(blocks, start_index, direction, window):
+    found = []
+    idx = start_index + direction
+    while 0 <= idx < len(blocks) and len(found) < window:
+        block = blocks[idx]
+        if isinstance(block, Paragraph):
+            if normalize_paragraph_text(block.text):
+                found.append((idx, block))
+        idx += direction
+    return found
+
+
+def find_nearby_figure_caption(blocks, image_block_index, window=3):
+    for idx, paragraph in _non_empty_paragraphs_near(blocks, image_block_index, 1, window):
+        parsed = parse_figure_caption_number(paragraph.text)
+        if parsed:
+            parsed['block_index'] = idx
+            parsed['text'] = paragraph.text
+            return parsed
+    return None
+
+
+def _find_previous_figure_caption(blocks, image_block_index, window=3):
+    for idx, paragraph in _non_empty_paragraphs_near(blocks, image_block_index, -1, window):
+        parsed = parse_figure_caption_number(paragraph.text)
+        if parsed:
+            parsed['block_index'] = idx
+            parsed['text'] = paragraph.text
+            return parsed
+    return None
+
+
+def find_nearby_table_caption(blocks, table_block_index, window=3):
+    for idx, paragraph in _non_empty_paragraphs_near(blocks, table_block_index, -1, window):
+        parsed = parse_table_caption_number(paragraph.text)
+        if parsed:
+            parsed['block_index'] = idx
+            parsed['text'] = paragraph.text
+            return parsed
+    return None
+
+
+def _find_following_table_caption(blocks, table_block_index, window=3):
+    for idx, paragraph in _non_empty_paragraphs_near(blocks, table_block_index, 1, window):
+        parsed = parse_table_caption_number(paragraph.text)
+        if parsed:
+            parsed['block_index'] = idx
+            parsed['text'] = paragraph.text
+            return parsed
+    return None
+
+
+def check_caption_sequence(numbers, label):
+    records = [record for record in numbers if record]
+    result = {
+        'duplicate_numbers': [],
+        'duplicate_title_numbers': [],
+        'duplicate_subfigure_numbers': [],
+        'skipped_numbers': [],
+        'abnormal_order_numbers': [],
+        'warnings': [],
+    }
+    main_seen = {}
+    sub_seen = set()
+    previous_by_group = {}
+
+    for record in records:
+        key = record['key']
+        full_key = record['full_key']
+        if record.get('sub'):
+            if full_key in sub_seen and full_key not in result['duplicate_subfigure_numbers']:
+                result['duplicate_subfigure_numbers'].append(full_key)
+            sub_seen.add(full_key)
+        else:
+            if key in main_seen and key not in result['duplicate_numbers']:
+                result['duplicate_numbers'].append(key)
+                if main_seen[key].get('title') != record.get('title'):
+                    result['duplicate_title_numbers'].append(key)
+            main_seen[key] = record
+
+        group = record.get('chapter') if record.get('mode') == 'chapter' else None
+        previous = previous_by_group.get(group)
+        if previous is not None and record['number'] < previous and full_key not in result['abnormal_order_numbers']:
+            result['abnormal_order_numbers'].append(full_key)
+        previous_by_group[group] = record['number']
+
+    main_records = [record for record in records if not record.get('sub')]
+    grouped = {}
+    for record in main_records:
+        group = record.get('chapter') if record.get('mode') == 'chapter' else None
+        grouped.setdefault(group, set()).add(record['number'])
+    for group, present in grouped.items():
+        if not present:
+            continue
+        for expected in range(min(present), max(present) + 1):
+            if expected not in present:
+                skipped = f"{group}-{expected}" if group is not None else str(expected)
+                result['skipped_numbers'].append(skipped)
+
+    if result['duplicate_numbers']:
+        result['warnings'].append(f"{label}编号重复：{', '.join(result['duplicate_numbers'])}")
+    if result['duplicate_title_numbers']:
+        result['warnings'].append(f"{label}同一编号存在不同标题：{', '.join(result['duplicate_title_numbers'])}")
+    if result['duplicate_subfigure_numbers']:
+        result['warnings'].append(f"{label}子图编号重复：{', '.join(result['duplicate_subfigure_numbers'])}")
+    if result['skipped_numbers']:
+        result['warnings'].append(f"{label}编号疑似跳号：{', '.join(result['skipped_numbers'])}")
+    if result['abnormal_order_numbers']:
+        result['warnings'].append(f"{label}编号顺序疑似异常：{', '.join(result['abnormal_order_numbers'])}")
+    return result
+
+
+def extract_figure_references_from_text(text):
+    return [_normalize_reference_number(match.group('number')) for match in RE_FIGURE_REFERENCE.finditer(text or '')]
+
+
+def extract_table_references_from_text(text):
+    return [_normalize_reference_number(match.group('number')) for match in RE_TABLE_REFERENCE.finditer(text or '')]
+
+
+def _collect_caption_records(blocks, parser):
+    records = []
+    for idx, block in enumerate(blocks):
+        if not isinstance(block, Paragraph) or is_table_cell_paragraph(block):
+            continue
+        parsed = parser(block.text)
+        if parsed:
+            parsed['block_index'] = idx
+            parsed['text'] = block.text
+            records.append(parsed)
+    return records
+
+
+def audit_caption_numbers(document, report, config):
+    config = config or {}
+    if not config.get('enable_caption_number_audit', True):
+        return report
+
+    window = normalize_caption_search_window(config)
+    report.caption_search_window_used = window
+    numbering_mode = normalize_caption_numbering_mode(config)
+    report.caption_numbering_mode_used = numbering_mode
+    report.floating_images_maybe_unchecked = 0
+    info = "INFO: 当前版本主要支持嵌入型图片检测；浮动图片、文本框图片、组合图形可能无法完整识别。"
+    if info not in report.caption_audit_warnings:
+        report.caption_audit_warnings.append(info)
+
+    blocks = list(iter_block_items(document))
+    figure_records = _collect_caption_records(blocks, parse_figure_caption_number)
+    table_records = _collect_caption_records(blocks, parse_table_caption_number)
+    report.figure_caption_numbers = sorted({record['full_key'] for record in figure_records})
+    report.table_caption_numbers = sorted({record['full_key'] for record in table_records})
+    report.figure_captions_detected = max(report.figure_captions_detected, len(figure_records))
+    report.table_captions_detected = max(report.table_captions_detected, len(table_records))
+    report.tables_detected = sum(1 for block in blocks if isinstance(block, Table))
+
+    for label, records in (('图', figure_records), ('表', table_records)):
+        if numbering_mode == 'chapter' and any(record['mode'] == 'continuous' for record in records):
+            warning = f"{label}编号模式配置为 chapter，但检测到连续式编号。"
+            report.add_warning(warning)
+            report.caption_audit_warnings.append(warning)
+        if numbering_mode == 'continuous' and any(record['mode'] == 'chapter' for record in records):
+            warning = f"{label}编号模式配置为 continuous，但检测到章节式编号。"
+            report.add_warning(warning)
+            report.caption_audit_warnings.append(warning)
+
+    inline_image_indices = []
+    for idx, block in enumerate(blocks):
+        if isinstance(block, Paragraph) and detect_inline_image_paragraph(block):
+            inline_image_indices.append(idx)
+        elif isinstance(block, Paragraph) and _detect_floating_image_paragraph(block):
+            report.floating_images_maybe_unchecked += 1
+    report.inline_images_detected = len(inline_image_indices)
+
+    for image_idx in inline_image_indices:
+        if not find_nearby_figure_caption(blocks, image_idx, window):
+            report.figures_without_caption += 1
+            report.add_warning(f"疑似图片缺少图题：块 {image_idx + 1}")
+            previous = _find_previous_figure_caption(blocks, image_idx, window)
+            if previous:
+                report.abnormal_figure_caption_positions += 1
+                report.add_warning(f"图题位置疑似异常：{previous['full_key']} 位于图片前方")
+
+    for idx, block in enumerate(blocks):
+        if not isinstance(block, Table):
+            continue
+        if not find_nearby_table_caption(blocks, idx, window):
+            report.tables_without_caption += 1
+            report.add_warning(f"疑似表格缺少表题：块 {idx + 1}")
+            following = _find_following_table_caption(blocks, idx, window)
+            if following:
+                report.abnormal_table_caption_positions += 1
+                report.add_warning(f"表题位置疑似异常：{following['full_key']} 位于表格后方")
+
+    figure_sequence = check_caption_sequence(figure_records, '图')
+    table_sequence = check_caption_sequence(table_records, '表')
+    report.duplicate_figure_numbers = figure_sequence['duplicate_numbers'] + figure_sequence['duplicate_subfigure_numbers']
+    report.skipped_figure_numbers = figure_sequence['skipped_numbers']
+    report.duplicate_table_numbers = table_sequence['duplicate_numbers']
+    report.skipped_table_numbers = table_sequence['skipped_numbers']
+    for warning in figure_sequence['warnings'] + table_sequence['warnings']:
+        report.add_warning(warning)
+        report.caption_audit_warnings.append(warning)
+    return report
+
+
+def audit_cross_references(document, report, config):
+    config = config or {}
+    if not config.get('enable_cross_reference_audit', True):
+        return report
+
+    blocks = list(iter_block_items(document))
+    figure_caption_numbers = set(getattr(report, 'figure_caption_numbers', []))
+    table_caption_numbers = set(getattr(report, 'table_caption_numbers', []))
+    if not figure_caption_numbers or not table_caption_numbers:
+        figure_caption_numbers.update(record['full_key'] for record in _collect_caption_records(blocks, parse_figure_caption_number))
+        table_caption_numbers.update(record['full_key'] for record in _collect_caption_records(blocks, parse_table_caption_number))
+
+    figure_refs = []
+    table_refs = []
+    for block in blocks:
+        if not isinstance(block, Paragraph) or is_table_cell_paragraph(block):
+            continue
+        text = normalize_paragraph_text(block.text)
+        if not text or parse_figure_caption_number(text) or parse_table_caption_number(text):
+            continue
+        figure_refs.extend(extract_figure_references_from_text(text))
+        table_refs.extend(extract_table_references_from_text(text))
+
+    report.figure_references_detected = len(figure_refs)
+    report.table_references_detected = len(table_refs)
+    for ref in figure_refs:
+        canonical_ref = _canonical_caption_number(ref)
+        if canonical_ref not in figure_caption_numbers and ref not in report.missing_figure_references:
+            report.missing_figure_references.append(ref)
+            report.add_warning(f"正文引用的图编号不存在：图{ref}")
+    for ref in table_refs:
+        canonical_ref = _canonical_caption_number(ref)
+        if canonical_ref not in table_caption_numbers and ref not in report.missing_table_references:
+            report.missing_table_references.append(ref)
+            report.add_warning(f"正文引用的表编号不存在：表{ref}")
+
+    if config.get('warn_unreferenced_captions', False):
+        canonical_figure_refs = {_canonical_caption_number(ref) for ref in figure_refs}
+        canonical_table_refs = {_canonical_caption_number(ref) for ref in table_refs}
+        unreferenced_figures = sorted(figure_caption_numbers - canonical_figure_refs)
+        unreferenced_tables = sorted(table_caption_numbers - canonical_table_refs)
+        for number in unreferenced_figures:
+            report.add_warning(f"图题未被正文引用：图{number}")
+        for number in unreferenced_tables:
+            report.add_warning(f"表题未被正文引用：表{number}")
+    return report
 
 
 def _clear_first_line_indent_chars(paragraph):
@@ -138,38 +596,156 @@ def is_heading_paragraph(paragraph):
     return pPr is not None and pPr.find(qn('w:outlineLvl')) is not None
 
 
+def detect_thesis_section(paragraph, context=None):
+    text = normalize_paragraph_text(_paragraph_text(paragraph))
+    context = context or {}
+    if not text:
+        return 'unknown'
+    if RE_THESIS_CHINESE_ABSTRACT.match(text):
+        return 'chinese_abstract'
+    if RE_THESIS_ENGLISH_ABSTRACT.match(text):
+        return 'english_abstract'
+    if RE_THESIS_KEYWORDS.match(text):
+        return 'keywords'
+    if RE_THESIS_REFERENCES_HEADING.match(text):
+        return 'references_heading'
+    if RE_THESIS_REFERENCE_ITEM.match(text) or context.get('in_references') and RE_REFERENCE_ENTRY.match(text):
+        return 'reference_item'
+    if RE_THESIS_ACKNOWLEDGEMENT.match(text):
+        return 'acknowledgement'
+    if RE_THESIS_APPENDIX.match(text):
+        return 'appendix'
+    if RE_THESIS_TOC_TITLE.match(text) or RE_THESIS_TOC_ENTRY.match(text) or context.get('in_toc'):
+        if RE_THESIS_HEADING.match(text):
+            return 'heading'
+        return 'toc'
+    if RE_THESIS_FIGURE_CAPTION.match(text):
+        return 'figure_caption'
+    if RE_THESIS_TABLE_CAPTION.match(text):
+        return 'table_caption'
+    if is_equation_paragraph(paragraph):
+        return 'equation'
+    if RE_THESIS_HEADING.match(text) or is_heading_paragraph(paragraph):
+        return 'heading'
+    if context.get('in_chinese_abstract'):
+        return 'chinese_abstract'
+    if context.get('in_english_abstract'):
+        return 'english_abstract'
+    if context.get('in_appendix'):
+        return 'appendix'
+    if context.get('current_section') in ('body', 'heading'):
+        return 'body'
+    return 'unknown'
+
+
+def update_thesis_context(paragraph, context):
+    updated = _new_thesis_context(context)
+    section = detect_thesis_section(paragraph, updated)
+    updated['last_section_type'] = section
+    updated['sections_detected'].add(section)
+
+    if section == 'toc':
+        updated['current_section'] = 'toc'
+        updated['in_toc'] = True
+        updated['toc_paragraph_count'] += 1
+    elif section == 'heading':
+        updated['current_section'] = 'body'
+        updated['in_toc'] = False
+        updated['in_chinese_abstract'] = False
+        updated['in_english_abstract'] = False
+        updated['heading_count'] += 1
+    elif section == 'chinese_abstract':
+        updated['current_section'] = 'chinese_abstract'
+        updated['in_chinese_abstract'] = True
+        updated['in_english_abstract'] = False
+        updated['in_toc'] = False
+    elif section == 'english_abstract':
+        updated['current_section'] = 'english_abstract'
+        updated['in_english_abstract'] = True
+        updated['in_chinese_abstract'] = False
+        updated['in_toc'] = False
+    elif section == 'keywords':
+        updated['in_chinese_abstract'] = False
+        updated['in_english_abstract'] = False
+    elif section == 'references_heading':
+        updated['current_section'] = 'references'
+        updated['in_references'] = True
+        updated['in_toc'] = False
+        updated['in_chinese_abstract'] = False
+        updated['in_english_abstract'] = False
+    elif section == 'reference_item':
+        updated['reference_item_count'] += 1
+        updated['in_references'] = True
+    elif section == 'appendix':
+        updated['current_section'] = 'appendix'
+        updated['in_appendix'] = True
+        updated['in_toc'] = False
+    elif section == 'acknowledgement':
+        updated['current_section'] = 'acknowledgement'
+        updated['in_toc'] = False
+    elif section == 'figure_caption':
+        updated['figure_caption_count'] += 1
+    elif section == 'table_caption':
+        updated['table_caption_count'] += 1
+    elif section == 'equation':
+        updated['equation_count'] += 1
+
+    context.clear()
+    context.update(updated)
+    return section
+
+
 def is_caption_paragraph(paragraph):
-    return bool(RE_CAPTION.match(_paragraph_text(paragraph)))
+    text = normalize_paragraph_text(_paragraph_text(paragraph))
+    return bool(
+        RE_CAPTION.match(text)
+        or RE_THESIS_FIGURE_CAPTION.match(text)
+        or RE_THESIS_TABLE_CAPTION.match(text)
+    )
 
 
 def is_reference_paragraph(paragraph, context=None):
     context = context or {}
-    text = _paragraph_text(paragraph)
+    text = normalize_paragraph_text(_paragraph_text(paragraph))
     if not text:
         return False
     return (
         bool(context.get('in_reference_section'))
+        or bool(context.get('in_references'))
         or bool(RE_REFERENCE_TITLE.match(text))
+        or bool(RE_THESIS_REFERENCES_HEADING.match(text))
         or bool(RE_REFERENCE_ENTRY.match(text))
+        or bool(RE_THESIS_REFERENCE_ITEM.match(text))
     )
 
 
 def is_toc_paragraph(paragraph, context=None):
     context = context or {}
-    text = _paragraph_text(paragraph)
+    text = normalize_paragraph_text(_paragraph_text(paragraph))
     if not text:
         return False
-    if context.get('in_toc_section') or RE_TOC_TITLE.match(text) or RE_TOC_ENTRY.match(text):
+    if (
+        context.get('in_toc_section')
+        or context.get('in_toc')
+        or RE_TOC_TITLE.match(text)
+        or RE_TOC_ENTRY.match(text)
+        or RE_THESIS_TOC_TITLE.match(text)
+        or RE_THESIS_TOC_ENTRY.match(text)
+    ):
         return True
     xml = paragraph._p.xml
     return 'TOC' in xml and ('w:instrText' in xml or 'w:fldSimple' in xml)
 
 
 def is_equation_paragraph(paragraph):
-    text = _paragraph_text(paragraph)
+    text = normalize_paragraph_text(_paragraph_text(paragraph))
     if paragraph._p.find('.//' + qn('m:oMath')) is not None:
         return True
     if paragraph._p.find('.//' + qn('m:oMathPara')) is not None:
+        return True
+    if RE_THESIS_EQUATION_NUMBER.match(text):
+        return True
+    if len(text) <= 120 and RE_THESIS_EQUATION_TRAILING_NUMBER.search(text):
         return True
     if not text or RE_HAS_CHINESE.search(text):
         return False
@@ -186,6 +762,10 @@ def is_body_paragraph(paragraph, context=None):
     text = _paragraph_text(paragraph)
     if not text or _paragraph_in_table(paragraph):
         return False
+    context = context or {}
+    config = context.get('config') if isinstance(context, dict) else None
+    if config and is_protected_thesis_paragraph(paragraph, context, config):
+        return False
     if is_heading_paragraph(paragraph):
         return False
     if is_caption_paragraph(paragraph):
@@ -199,6 +779,30 @@ def is_body_paragraph(paragraph, context=None):
     if paragraph.alignment in (WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.RIGHT):
         return False
     return True
+
+
+def is_protected_thesis_paragraph(paragraph, context, config):
+    if not is_thesis_mode(config) or not config.get('enable_thesis_structure_detection', True):
+        return False
+    section = context.get('last_section_type') if isinstance(context, dict) else None
+    if not section:
+        section = detect_thesis_section(paragraph, context)
+    if config.get('protect_table_text', True) and is_table_cell_paragraph(paragraph):
+        return True
+    if config.get('protect_toc', True) and (section == 'toc' or is_toc_paragraph(paragraph, context)):
+        return True
+    if config.get('protect_references', True) and (
+        section in ('references_heading', 'reference_item')
+        or is_reference_paragraph(paragraph, context)
+    ):
+        return True
+    if config.get('protect_captions', True) and section in ('figure_caption', 'table_caption'):
+        return True
+    if config.get('protect_equations', True) and section == 'equation':
+        return True
+    if section in ('keywords', 'heading'):
+        return True
+    return False
 
 
 def apply_first_line_indent_chars(paragraph, chars):
@@ -248,6 +852,34 @@ class FormatReport:
     skipped_toc_paragraphs: int = 0
     skipped_reference_paragraphs: int = 0
     skipped_table_paragraphs: int = 0
+    thesis_mode_enabled: bool = False
+    thesis_sections_detected: dict[str, int] = field(default_factory=dict)
+    toc_paragraphs_detected: int = 0
+    reference_items_detected: int = 0
+    figure_captions_detected: int = 0
+    table_captions_detected: int = 0
+    equations_detected: int = 0
+    protected_paragraphs: int = 0
+    inline_images_detected: int = 0
+    floating_images_maybe_unchecked: int = 0
+    figures_without_caption: int = 0
+    duplicate_figure_numbers: list[str] = field(default_factory=list)
+    skipped_figure_numbers: list[str] = field(default_factory=list)
+    abnormal_figure_caption_positions: int = 0
+    figure_references_detected: int = 0
+    missing_figure_references: list[str] = field(default_factory=list)
+    tables_detected: int = 0
+    tables_without_caption: int = 0
+    duplicate_table_numbers: list[str] = field(default_factory=list)
+    skipped_table_numbers: list[str] = field(default_factory=list)
+    abnormal_table_caption_positions: int = 0
+    table_references_detected: int = 0
+    missing_table_references: list[str] = field(default_factory=list)
+    caption_audit_warnings: list[str] = field(default_factory=list)
+    caption_search_window_used: int = 3
+    caption_numbering_mode_used: str = "auto"
+    figure_caption_numbers: list[str] = field(default_factory=list)
+    table_caption_numbers: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     processed_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -285,9 +917,69 @@ class FormatReport:
             f"跳过目录段落：{self.skipped_toc_paragraphs}",
             f"跳过参考文献段落：{self.skipped_reference_paragraphs}",
             f"跳过表格内段落：{self.skipped_table_paragraphs}",
+        ]
+        if self.thesis_mode_enabled:
+            lines.extend([
+                "",
+                "论文结构识别摘要",
+                f"论文模式启用：{self.thesis_mode_enabled}",
+                f"识别结构类型：{self.thesis_sections_detected}",
+                f"识别目录段落：{self.toc_paragraphs_detected}",
+                f"识别参考文献条目：{self.reference_items_detected}",
+                f"识别图题：{self.figure_captions_detected}",
+                f"识别表题：{self.table_captions_detected}",
+                f"识别公式：{self.equations_detected}",
+                f"保护段落：{self.protected_paragraphs}",
+            ])
+        caption_problem_count = sum([
+            self.figures_without_caption,
+            len(self.duplicate_figure_numbers),
+            len(self.skipped_figure_numbers),
+            self.abnormal_figure_caption_positions,
+            len(self.missing_figure_references),
+            self.tables_without_caption,
+            len(self.duplicate_table_numbers),
+            len(self.skipped_table_numbers),
+            self.abnormal_table_caption_positions,
+            len(self.missing_table_references),
+        ])
+        lines.extend([
+            "",
+            "图题检查摘要",
+            f"嵌入型图片识别数量：{self.inline_images_detected}",
+            f"浮动/文本框/组合图片可能未完整识别：{self.floating_images_maybe_unchecked}",
+            f"识别图题：{self.figure_captions_detected}",
+            f"疑似图片缺少图题：{self.figures_without_caption}",
+            f"图编号重复：{', '.join(self.duplicate_figure_numbers) if self.duplicate_figure_numbers else '无'}",
+            f"图编号跳号：{', '.join(self.skipped_figure_numbers) if self.skipped_figure_numbers else '无'}",
+            f"图题位置异常：{self.abnormal_figure_caption_positions}",
+            f"正文图引用数量：{self.figure_references_detected}",
+            f"不存在的图引用：{', '.join(self.missing_figure_references) if self.missing_figure_references else '无'}",
+            "",
+            "表题检查摘要",
+            f"识别表格：{self.tables_detected or self.total_tables}",
+            f"识别表题：{self.table_captions_detected}",
+            f"疑似表格缺少表题：{self.tables_without_caption}",
+            f"表编号重复：{', '.join(self.duplicate_table_numbers) if self.duplicate_table_numbers else '无'}",
+            f"表编号跳号：{', '.join(self.skipped_table_numbers) if self.skipped_table_numbers else '无'}",
+            f"表题位置异常：{self.abnormal_table_caption_positions}",
+            f"正文表引用数量：{self.table_references_detected}",
+            f"不存在的表引用：{', '.join(self.missing_table_references) if self.missing_table_references else '无'}",
+            "",
+            "图表题注审计提示",
+            f"- 题注搜索窗口：{self.caption_search_window_used}",
+            f"- 题注编号模式：{self.caption_numbering_mode_used}",
+        ])
+        if self.caption_audit_warnings:
+            lines.extend(f"- {item}" for item in self.caption_audit_warnings)
+        else:
+            lines.append("- INFO: 当前版本主要支持嵌入型图片检测；浮动图片、文本框图片、组合图形可能无法完整识别。")
+        if caption_problem_count == 0:
+            lines.append("未发现明显图表题注编号问题。")
+        lines.extend([
             "",
             "Warnings：" + ("" if self.warnings else "无"),
-        ]
+        ])
         if self.warnings:
             lines.extend(warning_lines)
         lines.append("")
@@ -1294,10 +1986,7 @@ class WordProcessor:
         para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
     def _iter_block_items(self, parent):
-        parent_elm = parent.element.body if isinstance(parent, _Document) else parent._tc
-        for child in parent_elm.iterchildren():
-            if isinstance(child, CT_P): yield Paragraph(child, parent)
-            elif isinstance(child, CT_Tbl): yield Table(child, parent)
+        yield from iter_block_items(parent)
 
     def _get_or_add_table_pr(self, table):
         tbl = table._tbl
@@ -1741,6 +2430,11 @@ class WordProcessor:
 
     def format_document(self, input_path, output_path):
         report = FormatReport(input_file=str(input_path), output_file=str(output_path))
+        thesis_detection_enabled = (
+            is_thesis_mode(self.config)
+            and self.config.get('enable_thesis_structure_detection', True)
+        )
+        report.thesis_mode_enabled = bool(thesis_detection_enabled)
         if self.config.get('report_level', 'normal') != 'normal':
             report.add_warning("report_level 目前仅支持 normal，已按 normal 生成报告。")
 
@@ -1759,6 +2453,8 @@ class WordProcessor:
         report.total_paragraphs = len(doc.paragraphs) + self._count_table_paragraphs(doc)
         report.total_tables = len(doc.tables)
         report.skipped_table_paragraphs = self._count_table_paragraphs(doc)
+        if thesis_detection_enabled and self.config.get('protect_table_text', True):
+            report.protected_paragraphs += report.skipped_table_paragraphs
 
         apply_color = not is_from_txt
 
@@ -1855,6 +2551,7 @@ class WordProcessor:
         block_idx = 0
         in_reference_section = False
         in_toc_section = False
+        thesis_context = _new_thesis_context()
         while block_idx < len(all_blocks):
             block = all_blocks[block_idx]
             
@@ -1926,12 +2623,67 @@ class WordProcessor:
                 'in_reference_section': in_reference_section,
                 'in_toc_section': in_toc_section,
             }
+            thesis_section = None
+            if thesis_detection_enabled:
+                thesis_section = update_thesis_context(para, thesis_context)
+                report.thesis_sections_detected[thesis_section] = (
+                    report.thesis_sections_detected.get(thesis_section, 0) + 1
+                )
+                paragraph_context.update(thesis_context)
+                paragraph_context['config'] = self.config
+                in_toc_section = bool(thesis_context.get('in_toc'))
+                in_reference_section = bool(thesis_context.get('in_references'))
+                paragraph_context['in_toc_section'] = in_toc_section
+                paragraph_context['in_reference_section'] = in_reference_section
             if RE_REFERENCE_TITLE.match(text_to_check_stripped):
                 in_reference_section = True
                 paragraph_context['in_reference_section'] = True
             if RE_TOC_TITLE.match(text_to_check_stripped):
                 in_toc_section = True
                 paragraph_context['in_toc_section'] = True
+
+            if thesis_detection_enabled and is_protected_thesis_paragraph(para, paragraph_context, self.config):
+                self._log(f"段落 {current_block_num}: 论文结构保护段落({thesis_section}) - \"{para_text_preview}...\"")
+                report.protected_paragraphs += 1
+                if thesis_section == 'toc':
+                    report.skipped_toc_paragraphs += 1
+                    report.toc_paragraphs_detected += 1
+                elif thesis_section in ('references_heading', 'reference_item'):
+                    report.skipped_reference_paragraphs += 1
+                    if thesis_section == 'reference_item':
+                        report.reference_items_detected += 1
+                elif thesis_section == 'figure_caption':
+                    report.figure_captions_detected += 1
+                    if block_idx not in caption_indices:
+                        report.captions_detected += 1
+                        report.captions_fixed += 1
+                        caption_indices.add(block_idx)
+                elif thesis_section == 'table_caption':
+                    report.table_captions_detected += 1
+                    if block_idx not in caption_indices:
+                        report.captions_detected += 1
+                        report.captions_fixed += 1
+                        caption_indices.add(block_idx)
+                elif thesis_section == 'equation':
+                    report.equations_detected += 1
+                elif thesis_section == 'heading':
+                    report.headings_detected += 1
+
+                _clear_first_line_indent_chars(para)
+                if thesis_section in ('figure_caption', 'table_caption'):
+                    caption_kind = 'figure' if thesis_section == 'figure_caption' else 'table'
+                    self._apply_font_to_runs(
+                        para,
+                        self.config[f'{caption_kind}_caption_font'],
+                        self.config[f'{caption_kind}_caption_size'],
+                        set_color=apply_color,
+                    )
+                    para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                else:
+                    self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
+                self._reset_pagination_properties(para)
+                block_idx += 1
+                continue
 
             if is_attachment_enabled and is_attachment_candidate:
                 self._log(f"段落 {current_block_num}: 附件标识 - \"{para_text_preview}...\"")
@@ -2192,6 +2944,18 @@ class WordProcessor:
                 self._reset_pagination_properties(para)
             
             block_idx += 1
+
+        if thesis_detection_enabled:
+            report.toc_paragraphs_detected = thesis_context.get('toc_paragraph_count', 0)
+            report.reference_items_detected = thesis_context.get('reference_item_count', 0)
+            report.figure_captions_detected = thesis_context.get('figure_caption_count', 0)
+            report.table_captions_detected = thesis_context.get('table_caption_count', 0)
+            report.equations_detected = thesis_context.get('equation_count', 0)
+            if not thesis_context.get('heading_count'):
+                report.add_warning("论文结构识别未发现明确正文标题，已按保守规则保护已识别段落。")
+
+        audit_caption_numbers(doc, report, self.config)
+        audit_cross_references(doc, report, self.config)
 
         report.tables_fixed = self._format_tables(doc, apply_color=apply_color)
         self._apply_page_setup(doc, is_from_txt=is_from_txt)

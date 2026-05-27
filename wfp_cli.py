@@ -102,6 +102,14 @@ CONFIG_DESCRIPTIONS = {
     "table_border_size_pt": ("表格边框粗细", "pt"),
     "enable_format_report": ("生成格式检查报告", "true/false"),
     "report_level": ("格式检查报告级别", "normal"),
+    "document_mode": ("文档模式", "general/thesis"),
+    "thesis_mode_enabled": ("论文模式开关", "true/false"),
+    "protect_toc": ("保护目录", "true/false"),
+    "protect_references": ("保护参考文献", "true/false"),
+    "protect_captions": ("保护图表题注", "true/false"),
+    "protect_equations": ("保护公式", "true/false"),
+    "protect_table_text": ("保护表格内文字", "true/false"),
+    "enable_thesis_structure_detection": ("启用论文结构识别", "true/false"),
 }
 
 
@@ -167,6 +175,21 @@ def normalize_config(config):
         value = merged.get(key)
         if value is None or (isinstance(value, str) and not value.strip()):
             merged[key] = default_value
+    document_mode = str(merged.get("document_mode", "general")).lower()
+    if document_mode not in ("general", "thesis"):
+        document_mode = DEFAULT_CONFIG["document_mode"]
+    merged["document_mode"] = document_mode
+    caption_mode = str(merged.get("caption_numbering_mode", "auto")).lower()
+    if caption_mode not in ("auto", "chapter", "continuous"):
+        caption_mode = DEFAULT_CONFIG["caption_numbering_mode"]
+    merged["caption_numbering_mode"] = caption_mode
+    try:
+        caption_window = int(merged.get("caption_search_window", 3))
+    except (TypeError, ValueError):
+        caption_window = 3
+    if caption_window < 1 or caption_window > 5:
+        caption_window = 3
+    merged["caption_search_window"] = caption_window
     merged["ui_scale"] = validate_ui_scale(merged.get("ui_scale"))
     return merged
 
