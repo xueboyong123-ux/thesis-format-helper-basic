@@ -1,2 +1,12 @@
 __pycache__/
 *.pyc
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+*.log
+*.tmp
+~$*.docx
+*_formatted.docx
+*_format_report.txt
