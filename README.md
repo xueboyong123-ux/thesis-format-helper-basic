@@ -49,6 +49,12 @@ python -m pip install -U pip
 pip install -r requirements.txt
 ```
 
+## 下载使用
+
+普通用户推荐下载 GitHub Release 中的 Windows zip 压缩包。解压后进入文件夹，双击 `论文格式修改助手.exe` 即可启动软件，不需要自行安装 Python。
+
+开发者可以 clone 源码后按下方方式安装依赖并运行 Python 入口。当前 exe 为未签名测试版，Windows 或杀毒软件可能弹出安全提示。
+
 ## 使用流程
 
 1. 启动 GUI：
