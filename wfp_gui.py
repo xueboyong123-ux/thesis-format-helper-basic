@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import queue
+import re
 import tempfile
 import threading
 
@@ -18,7 +19,7 @@ except Exception:
     TkinterDnD = None
     TKDND_AVAILABLE = False
 
-from wfp_config import DEFAULT_CONFIG, FONT_SIZE_MAP, PRESET_FONT_OPTIONS
+from wfp_config import DEFAULT_CONFIG, FONT_SIZE_MAP, PRESET_FONT_OPTIONS, validate_ui_scale
 from wfp_core import (
     BLANK_LINE_MODE_DELETE_SINGLE,
     BLANK_LINE_MODE_KEEP_SINGLE,
@@ -33,14 +34,106 @@ from wfp_core import (
     _uninitialize_com_for_thread,
 )
 
+BASE_WINDOW_WIDTH = 1200
+BASE_WINDOW_HEIGHT = 860
+WINDOW_GEOMETRY_KEY = "window_geometry"
+UI_SCALE_LABELS = {
+    0.9: "90%",
+    1.0: "100%",
+    1.1: "110%",
+    1.25: "125%",
+    1.5: "150%",
+}
+UI_SCALE_VALUES = {label: scale for scale, label in UI_SCALE_LABELS.items()}
+
+
+def scale_px(value, scale):
+    value = int(value)
+    if value == 0:
+        return 0
+    return max(1, int(round(value * validate_ui_scale(scale))))
+
+
+def scale_geometry(width, height, scale):
+    return scale_px(width, scale), scale_px(height, scale)
+
+
+def _ui_scale_to_label(scale):
+    return UI_SCALE_LABELS[validate_ui_scale(scale)]
+
+
+def _ui_scale_from_label(label):
+    if label in UI_SCALE_VALUES:
+        return UI_SCALE_VALUES[label]
+    if isinstance(label, str) and label.endswith("%"):
+        try:
+            return validate_ui_scale(float(label[:-1]) / 100)
+        except ValueError:
+            return 1.0
+    return validate_ui_scale(label)
+
+
+def apply_scaled_fonts(root, scale):
+    scale = validate_ui_scale(scale)
+    named_fonts = (
+        "TkDefaultFont",
+        "TkTextFont",
+        "TkMenuFont",
+        "TkHeadingFont",
+        "TkCaptionFont",
+        "TkSmallCaptionFont",
+        "TkIconFont",
+        "TkTooltipFont",
+        "TkFixedFont",
+    )
+    for font_name in named_fonts:
+        try:
+            named_font = tkfont.nametofont(font_name)
+            original_size = named_font.cget("size")
+            sign = -1 if original_size < 0 else 1
+            named_font.configure(size=sign * max(1, int(round(abs(original_size) * scale))))
+        except tk.TclError:
+            continue
+
+    try:
+        default_font = tkfont.nametofont("TkDefaultFont")
+        text_font = tkfont.nametofont("TkTextFont")
+        style = ttk.Style(root)
+        for style_name in (
+            "TLabel",
+            "TButton",
+            "TCheckbutton",
+            "TCombobox",
+            "TEntry",
+            "TLabelframe.Label",
+            "TNotebook.Tab",
+        ):
+            style.configure(style_name, font=default_font)
+        style.configure("Treeview", font=default_font)
+        style.configure("Treeview.Heading", font=default_font)
+        root.option_add("*Font", default_font)
+        root.option_add("*Text.Font", text_font)
+    except tk.TclError:
+        pass
+
+
+def apply_initial_ui_scaling(root, scale):
+    width, height = scale_geometry(BASE_WINDOW_WIDTH, BASE_WINDOW_HEIGHT, scale)
+    root.geometry(f"{width}x{height}")
+    root.minsize(width, height)
+
+
 class WordFormatterGUI:
     FIRST_LINE_INDENT_SCOPE_OPTIONS = ["body_only"]
 
     def __init__(self, master):
         self.master = master
+        self.default_config_path = "default_config.json"
+        self.startup_config = self._load_startup_config()
+        self.ui_scale = validate_ui_scale(self.startup_config.get('ui_scale', DEFAULT_CONFIG['ui_scale']))
+        apply_scaled_fonts(master, self.ui_scale)
         master.title("Word文档智能排版工具 v2.7.4")
-        master.geometry("1200x860")
-        master.minsize(1200, 860)
+        apply_initial_ui_scaling(master, self.ui_scale)
         self.log_queue = queue.Queue()
         self.is_processing = False
 
@@ -59,6 +152,13 @@ class WordFormatterGUI:
         self.use_custom_english_font_var = tk.BooleanVar(value=self.default_params['use_custom_english_font'])
         self.normalize_punctuation_var = tk.BooleanVar(value=self.default_params['normalize_punctuation'])
         self.enable_first_line_indent_var = tk.BooleanVar(value=self.default_params['enable_first_line_indent'])
+        self.ui_scale_var = tk.StringVar(value=_ui_scale_to_label(self.ui_scale))
+        self.remember_window_geometry_var = tk.BooleanVar(
+            value=bool(self.startup_config.get(
+                'remember_window_geometry',
+                self.default_params['remember_window_geometry']
+            ))
+        )
         self.enable_table_var = tk.BooleanVar(value=self.default_params['enable_table_formatting'])
         self.table_auto_col_width_var = tk.BooleanVar(value=self.default_params['table_auto_col_width'])
         self.table_header_bold_var = tk.BooleanVar(value=self.default_params['table_header_bold'])
@@ -69,16 +169,31 @@ class WordFormatterGUI:
         self.entries = {}
         self.attachment_option_widgets = []
         self.table_option_widgets = []
-        
-        self.default_config_path = "default_config.json"
-        
         self.create_menu()
         self.create_widgets()
         self.load_initial_config()
+        self._restore_saved_window_geometry(self.startup_config)
 
         self.master.protocol("WM_DELETE_WINDOW", self._on_close)
         self.master.after(250, self.set_initial_pane_position)
         self.master.after(100, self._check_log_queue)
+
+    def _load_startup_config(self):
+        if not os.path.exists(self.default_config_path):
+            return DEFAULT_CONFIG.copy()
+        try:
+            with open(self.default_config_path, 'r', encoding='utf-8') as f:
+                loaded_config = json.load(f)
+            if not isinstance(loaded_config, dict):
+                return DEFAULT_CONFIG.copy()
+        except Exception:
+            return DEFAULT_CONFIG.copy()
+
+        merged = {**DEFAULT_CONFIG, **loaded_config}
+        merged['ui_scale'] = validate_ui_scale(merged.get('ui_scale'))
+        if not isinstance(merged.get('remember_window_geometry'), bool):
+            merged['remember_window_geometry'] = DEFAULT_CONFIG['remember_window_geometry']
+        return merged
 
     def _get_installed_fonts(self):
         try:
@@ -134,6 +249,12 @@ class WordFormatterGUI:
 
     def _update_table_state(self):
         self._set_widgets_enabled(self.table_option_widgets, self.enable_table_var.get())
+
+    def _show_ui_scale_restart_notice(self, *_args):
+        try:
+            messagebox.showinfo("提示", "界面缩放保存后需重启软件生效。", parent=self.master)
+        except tk.TclError:
+            pass
 
     def _enable_dependent_widgets_for_config_load(self):
         self._set_widgets_enabled(self.attachment_option_widgets, True)
@@ -196,10 +317,11 @@ class WordFormatterGUI:
         help_label.bind("<Button-1>", lambda e: self._show_help_tooltip("识别规则说明", text))
 
     def create_widgets(self):
+        s = self.ui_scale
         main_pane = ttk.PanedWindow(self.master, orient=tk.HORIZONTAL)
-        main_pane.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        main_pane.pack(fill=tk.BOTH, expand=True, padx=scale_px(5, s), pady=scale_px(5, s))
 
-        left_frame = ttk.Frame(main_pane, padding=5)
+        left_frame = ttk.Frame(main_pane, padding=scale_px(5, s))
         main_pane.add(left_frame, weight=2)
 
         notebook = ttk.Notebook(left_frame)
@@ -210,7 +332,7 @@ class WordFormatterGUI:
         notebook.add(file_tab, text=' 文件批量处理 ')
         
         list_frame = ttk.LabelFrame(file_tab, text="待处理文件列表（可拖拽文件或文件夹）")
-        list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=scale_px(5, s))
         
         v_scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
         h_scrollbar = ttk.Scrollbar(list_frame, orient=tk.HORIZONTAL)
@@ -241,36 +363,36 @@ class WordFormatterGUI:
         self.placeholder_label = ttk.Label(self.file_listbox, text=placeholder_text, foreground="grey")
         
         file_button_frame = ttk.Frame(file_tab)
-        file_button_frame.pack(fill=tk.X, pady=5)
-        ttk.Button(file_button_frame, text="添加文件", command=self.add_files).grid(row=0, column=0, sticky='ew', padx=2, pady=2)
-        ttk.Button(file_button_frame, text="添加文件夹", command=self.add_folder).grid(row=0, column=1, sticky='ew', padx=2, pady=2)
-        ttk.Button(file_button_frame, text="移除文件", command=self.remove_files).grid(row=1, column=0, sticky='ew', padx=2, pady=2)
-        ttk.Button(file_button_frame, text="清空列表", command=self.clear_list).grid(row=1, column=1, sticky='ew', padx=2, pady=2)
+        file_button_frame.pack(fill=tk.X, pady=scale_px(5, s))
+        ttk.Button(file_button_frame, text="添加文件", command=self.add_files).grid(row=0, column=0, sticky='ew', padx=scale_px(2, s), pady=scale_px(2, s))
+        ttk.Button(file_button_frame, text="添加文件夹", command=self.add_folder).grid(row=0, column=1, sticky='ew', padx=scale_px(2, s), pady=scale_px(2, s))
+        ttk.Button(file_button_frame, text="移除文件", command=self.remove_files).grid(row=1, column=0, sticky='ew', padx=scale_px(2, s), pady=scale_px(2, s))
+        ttk.Button(file_button_frame, text="清空列表", command=self.clear_list).grid(row=1, column=1, sticky='ew', padx=scale_px(2, s), pady=scale_px(2, s))
         file_button_frame.columnconfigure(0, weight=1)
         file_button_frame.columnconfigure(1, weight=1)
 
         text_tab = ttk.Frame(notebook)
         notebook.add(text_tab, text=' 直接输入文本 ')
         text_frame = ttk.LabelFrame(text_tab, text="在此处输入或粘贴文本")
-        text_frame.pack(fill=tk.BOTH, expand=True, pady=5)
-        self.direct_text_input = scrolledtext.ScrolledText(text_frame, height=10, wrap=tk.WORD)
+        text_frame.pack(fill=tk.BOTH, expand=True, pady=scale_px(5, s))
+        self.direct_text_input = scrolledtext.ScrolledText(text_frame, height=scale_px(10, s), wrap=tk.WORD)
         self.direct_text_input.pack(fill=tk.BOTH, expand=True)
 
         style = ttk.Style()
-        style.configure('Success.TButton', font=('Helvetica', 10, 'bold'), foreground='green')
+        style.configure('Success.TButton', font=('Helvetica', scale_px(10, s), 'bold'), foreground='green')
 
         left_action_frame = ttk.Frame(left_frame)
-        left_action_frame.pack(fill=tk.X, pady=(5, 0))
+        left_action_frame.pack(fill=tk.X, pady=(scale_px(5, s), 0))
         self.start_btn = ttk.Button(
             left_action_frame,
             text="开始排版",
             style='Success.TButton',
             command=self.start_processing
         )
-        self.start_btn.pack(fill=tk.X, ipady=8)
+        self.start_btn.pack(fill=tk.X, ipady=scale_px(8, s))
 
         progress_frame = ttk.Frame(left_frame)
-        progress_frame.pack(fill=tk.X, pady=(5, 0))
+        progress_frame.pack(fill=tk.X, pady=(scale_px(5, s), 0))
         self.progressbar = ttk.Progressbar(
             progress_frame,
             mode='determinate',
@@ -281,11 +403,11 @@ class WordFormatterGUI:
         ttk.Label(progress_frame, textvariable=self.progress_text_var, foreground="grey").pack(anchor=tk.W)
 
         log_frame = ttk.LabelFrame(left_frame, text="调试日志")
-        log_frame.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
-        self.debug_text = scrolledtext.ScrolledText(log_frame, height=10, state='disabled', wrap=tk.WORD)
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=(scale_px(5, s), 0))
+        self.debug_text = scrolledtext.ScrolledText(log_frame, height=scale_px(10, s), state='disabled', wrap=tk.WORD)
         self.debug_text.pack(fill=tk.BOTH, expand=True)
 
-        right_frame = ttk.Frame(main_pane, padding=5)
+        right_frame = ttk.Frame(main_pane, padding=scale_px(5, s))
         main_pane.add(right_frame, weight=4)
         
         canvas = tk.Canvas(right_frame)
@@ -295,25 +417,25 @@ class WordFormatterGUI:
         params_container = ttk.Frame(canvas)
         canvas_window = canvas.create_window((0, 0), window=params_container, anchor='nw')
         
-        params_frame = ttk.LabelFrame(params_container, text="参数设置", padding=10)
-        params_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
+        params_frame = ttk.LabelFrame(params_container, text="参数设置", padding=scale_px(10, s))
+        params_frame.pack(fill=tk.BOTH, expand=True, pady=(0, scale_px(5, s)))
         params_frame.columnconfigure(1, weight=1)
         params_frame.columnconfigure(3, weight=1)
         params_frame.columnconfigure(5, weight=1)
 
         # Helper functions for creating widgets
         def create_entry(label, var_name, r, c):
-            ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=3, pady=2)
-            entry = ttk.Entry(params_frame, width=12)
-            entry.grid(row=r, column=c+1, sticky=tk.EW, padx=3, pady=2)
+            ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=scale_px(3, s), pady=scale_px(2, s))
+            entry = ttk.Entry(params_frame, width=scale_px(12, s))
+            entry.grid(row=r, column=c+1, sticky=tk.EW, padx=scale_px(3, s), pady=scale_px(2, s))
             self.entries[var_name] = entry
             return entry
-        
-        def create_combo(label, var_name, opts, r, c, readonly=True): 
-            ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=3, pady=2)
+
+        def create_combo(label, var_name, opts, r, c, readonly=True):
+            ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=scale_px(3, s), pady=scale_px(2, s))
             state = 'readonly' if readonly else 'normal'
-            combo = ttk.Combobox(params_frame, values=opts, state=state, width=15)
-            combo.grid(row=r, column=c+1, sticky=tk.EW, padx=3, pady=2)
+            combo = ttk.Combobox(params_frame, values=opts, state=state, width=scale_px(15, s))
+            combo.grid(row=r, column=c+1, sticky=tk.EW, padx=scale_px(3, s), pady=scale_px(2, s))
             if self.font_separator in opts:
                 combo._last_valid_value = ''
 
@@ -334,16 +456,16 @@ class WordFormatterGUI:
             return combo
 
         def create_font_size_combo(label, var_name, r, c):
-            ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=3, pady=2)
-            combo = ttk.Combobox(params_frame, values=list(self.font_size_map.keys()), width=15)
-            combo.grid(row=r, column=c+1, sticky=tk.EW, padx=3, pady=2)
+            ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=scale_px(3, s), pady=scale_px(2, s))
+            combo = ttk.Combobox(params_frame, values=list(self.font_size_map.keys()), width=scale_px(15, s))
+            combo.grid(row=r, column=c+1, sticky=tk.EW, padx=scale_px(3, s), pady=scale_px(2, s))
             self.entries[var_name] = combo
             return combo
 
         def create_section_header(text, help_text, r):
             header_frame = ttk.Frame(params_frame)
-            header_frame.grid(row=r, column=0, columnspan=6, sticky='ew', pady=(6, 2))
-            ttk.Label(header_frame, text=text, font=('Helvetica', 9, 'bold')).pack(side=tk.LEFT)
+            header_frame.grid(row=r, column=0, columnspan=6, sticky='ew', pady=(scale_px(6, s), scale_px(2, s)))
+            ttk.Label(header_frame, text=text, font=('Helvetica', scale_px(9, s), 'bold')).pack(side=tk.LEFT)
             if help_text:
                 help_label = ttk.Label(header_frame, text="(?)", foreground="blue", cursor="hand2")
                 help_label.pack(side=tk.LEFT, padx=(2, 0))
@@ -468,24 +590,48 @@ class WordFormatterGUI:
         self._update_english_font_state()
         row += 1
         blank_line_combo = create_combo("TXT/MD空行处理", 'blank_line_mode', BLANK_LINE_MODE_OPTIONS, row, 0)
-        blank_line_combo.configure(width=42)
+        blank_line_combo.configure(width=scale_px(42, s))
         blank_line_combo.grid_configure(columnspan=5)
         row += 1
 
+        ttk.Label(params_frame, text="界面缩放").grid(
+            row=row, column=0, sticky=tk.W, padx=scale_px(3, s), pady=scale_px(2, s)
+        )
+        ui_scale_combo = ttk.Combobox(
+            params_frame,
+            values=list(UI_SCALE_VALUES.keys()),
+            state='readonly',
+            textvariable=self.ui_scale_var,
+            width=scale_px(15, s),
+        )
+        ui_scale_combo.grid(row=row, column=1, sticky=tk.EW, padx=scale_px(3, s), pady=scale_px(2, s))
+        ui_scale_combo.bind("<<ComboboxSelected>>", self._show_ui_scale_restart_notice, add="+")
+        ttk.Checkbutton(
+            params_frame,
+            text="记住窗口大小",
+            variable=self.remember_window_geometry_var,
+        ).grid(row=row, column=2, columnspan=2, sticky=tk.W, padx=scale_px(3, s), pady=scale_px(2, s))
+        ttk.Label(
+            params_frame,
+            text="界面缩放保存后需重启软件生效",
+            foreground="grey",
+        ).grid(row=row, column=4, columnspan=2, sticky=tk.W, padx=scale_px(3, s), pady=scale_px(2, s))
+        row += 1
+
         # 按钮区域
-        ttk.Checkbutton(params_frame, text="启用符号标准化（实验功能，保守修复中英文标点混用）", variable=self.normalize_punctuation_var).grid(row=row, columnspan=6, sticky=tk.W, padx=3)
+        ttk.Checkbutton(params_frame, text="启用符号标准化（实验功能，保守修复中英文标点混用）", variable=self.normalize_punctuation_var).grid(row=row, columnspan=6, sticky=tk.W, padx=scale_px(3, s))
         row += 1
 
         button_frame = ttk.Frame(params_container)
-        button_frame.pack(fill=tk.X, pady=5)
+        button_frame.pack(fill=tk.X, pady=scale_px(5, s))
         
         # 配置按钮 - 2x2布局
         config_buttons = ttk.Frame(button_frame)
-        config_buttons.pack(fill=tk.X, pady=(0, 5))
-        ttk.Button(config_buttons, text="加载配置", command=self.load_config).grid(row=0, column=0, sticky='ew', padx=2, pady=2)
-        ttk.Button(config_buttons, text="保存配置", command=self.save_config).grid(row=0, column=1, sticky='ew', padx=2, pady=2)
-        ttk.Button(config_buttons, text="保存为默认", command=self.save_default_config).grid(row=1, column=0, sticky='ew', padx=2, pady=2)
-        ttk.Button(config_buttons, text="恢复内置默认", command=self.load_defaults).grid(row=1, column=1, sticky='ew', padx=2, pady=2)
+        config_buttons.pack(fill=tk.X, pady=(0, scale_px(5, s)))
+        ttk.Button(config_buttons, text="加载配置", command=self.load_config).grid(row=0, column=0, sticky='ew', padx=scale_px(2, s), pady=scale_px(2, s))
+        ttk.Button(config_buttons, text="保存配置", command=self.save_config).grid(row=0, column=1, sticky='ew', padx=scale_px(2, s), pady=scale_px(2, s))
+        ttk.Button(config_buttons, text="保存为默认", command=self.save_default_config).grid(row=1, column=0, sticky='ew', padx=scale_px(2, s), pady=scale_px(2, s))
+        ttk.Button(config_buttons, text="恢复内置默认", command=self.load_defaults).grid(row=1, column=1, sticky='ew', padx=scale_px(2, s), pady=scale_px(2, s))
         config_buttons.columnconfigure(0, weight=1)
         config_buttons.columnconfigure(1, weight=1)
 
@@ -607,6 +753,9 @@ class WordFormatterGUI:
         self.use_custom_english_font_var.set(loaded_config.get('use_custom_english_font', False))
         self.normalize_punctuation_var.set(loaded_config.get('normalize_punctuation', False))
         self.enable_first_line_indent_var.set(loaded_config.get('enable_first_line_indent', True))
+        loaded_config['ui_scale'] = validate_ui_scale(loaded_config.get('ui_scale'))
+        self.ui_scale_var.set(_ui_scale_to_label(loaded_config['ui_scale']))
+        self.remember_window_geometry_var.set(bool(loaded_config.get('remember_window_geometry', True)))
         self.enable_table_var.set(loaded_config.get('enable_table_formatting', False))
         self.table_auto_col_width_var.set(loaded_config.get('table_auto_col_width', True))
         self.table_header_bold_var.set(loaded_config.get('table_header_bold', True))
@@ -616,7 +765,7 @@ class WordFormatterGUI:
             'set_outline', 'enable_attachment_formatting', 'force_a4',
             'use_custom_english_font', 'use_times_new_roman',
             'remove_blank_lines', 'normalize_punctuation',
-            'enable_first_line_indent',
+            'enable_first_line_indent', 'remember_window_geometry',
             'enable_table_formatting', 'table_auto_col_width', 'table_header_bold',
             'table_smart_align', 'table_unified_borders'
         ]
@@ -659,6 +808,8 @@ class WordFormatterGUI:
         config['use_custom_english_font'] = self.use_custom_english_font_var.get()
         config['normalize_punctuation'] = self.normalize_punctuation_var.get()
         config['enable_first_line_indent'] = self.enable_first_line_indent_var.get()
+        config['ui_scale'] = _ui_scale_from_label(self.ui_scale_var.get())
+        config['remember_window_geometry'] = self.remember_window_geometry_var.get()
         config['enable_table_formatting'] = self.enable_table_var.get()
         config['table_auto_col_width'] = self.table_auto_col_width_var.get()
         config['table_header_bold'] = self.table_header_bold_var.get()
@@ -707,6 +858,7 @@ class WordFormatterGUI:
         if scope not in self.FIRST_LINE_INDENT_SCOPE_OPTIONS:
             self._show_config_validation_error("首行缩进范围目前只允许 body_only。")
             return False
+        config['ui_scale'] = validate_ui_scale(config.get('ui_scale'))
         return True
 
     def save_config(self):
@@ -716,7 +868,7 @@ class WordFormatterGUI:
         file_path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON files", "*.json")])
         if file_path:
             with open(file_path, 'w', encoding='utf-8') as f: json.dump(config, f, ensure_ascii=False, indent=4)
-            messagebox.showinfo("成功", f"配置已保存至 {file_path}")
+            messagebox.showinfo("成功", f"配置已保存至 {file_path}\n界面缩放保存后需重启软件生效。")
 
     def save_default_config(self):
         config = self.collect_config()
@@ -725,7 +877,7 @@ class WordFormatterGUI:
         try:
             with open(self.default_config_path, 'w', encoding='utf-8') as f:
                 json.dump(config, f, ensure_ascii=False, indent=4)
-            messagebox.showinfo("成功", f"当前配置已保存为默认配置。\n下次启动软件时将自动加载。")
+            messagebox.showinfo("成功", f"当前配置已保存为默认配置。\n下次启动软件时将自动加载。\n界面缩放保存后需重启软件生效。")
         except Exception as e:
             messagebox.showerror("错误", f"保存默认配置失败: {e}")
 
@@ -1035,11 +1187,75 @@ Word文档智能排版工具 v2.7.4 - 使用说明
         except tk.TclError:
             pass
 
+    def _is_window_geometry_usable(self, geometry):
+        match = re.match(r"^(\d+)x(\d+)([+-]\d+)?([+-]\d+)?$", str(geometry or ""))
+        if not match:
+            return False
+
+        width = int(match.group(1))
+        height = int(match.group(2))
+        min_width, min_height = scale_geometry(BASE_WINDOW_WIDTH, BASE_WINDOW_HEIGHT, self.ui_scale)
+        if width < min_width or height < min_height:
+            return False
+
+        try:
+            screen_width = self.master.winfo_screenwidth()
+            screen_height = self.master.winfo_screenheight()
+        except tk.TclError:
+            return False
+
+        if width > max(screen_width, min_width) * 2 or height > max(screen_height, min_height) * 2:
+            return False
+
+        x_part = match.group(3)
+        y_part = match.group(4)
+        if x_part is not None and y_part is not None:
+            x = int(x_part)
+            y = int(y_part)
+            if x >= screen_width or y >= screen_height:
+                return False
+            if x + width <= 80 or y + height <= 80:
+                return False
+
+        return True
+
+    def _restore_saved_window_geometry(self, config):
+        if not config.get('remember_window_geometry', True):
+            return
+        geometry = config.get(WINDOW_GEOMETRY_KEY)
+        if self._is_window_geometry_usable(geometry):
+            self.master.geometry(geometry)
+
+    def _save_window_geometry(self):
+        config = {}
+        if os.path.exists(self.default_config_path):
+            try:
+                with open(self.default_config_path, 'r', encoding='utf-8') as f:
+                    loaded_config = json.load(f)
+                if isinstance(loaded_config, dict):
+                    config = loaded_config
+            except Exception:
+                config = {}
+
+        config['ui_scale'] = _ui_scale_from_label(self.ui_scale_var.get())
+        config['remember_window_geometry'] = self.remember_window_geometry_var.get()
+        if self.remember_window_geometry_var.get():
+            config[WINDOW_GEOMETRY_KEY] = self.master.geometry()
+        else:
+            config.pop(WINDOW_GEOMETRY_KEY, None)
+
+        try:
+            with open(self.default_config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            self.log_to_debug_window(f"保存窗口大小失败: {e}")
+
     def _on_close(self):
         if self.is_processing:
             if not messagebox.askyesno("确认", "任务仍在进行中，确定要退出吗？", parent=self.master):
                 return
         self._drain_log_queue()
+        self._save_window_geometry()
         self.master.destroy()
 
 

@@ -3,6 +3,20 @@
 
 from wfp_core import DEFAULT_BLANK_LINE_MODE
 
+ALLOWED_UI_SCALES = (0.9, 1.0, 1.1, 1.25, 1.5)
+
+
+def validate_ui_scale(value):
+    try:
+        scale = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    for allowed in ALLOWED_UI_SCALES:
+        if abs(scale - allowed) < 0.000001:
+            return allowed
+    return 1.0
+
+
 FONT_SIZE_MAP = {
     '一号 (26pt)': 26, '小一 (24pt)': 24, '二号 (22pt)': 22, '小二 (18pt)': 18,
     '三号 (16pt)': 16, '小三 (15pt)': 15, '四号 (14pt)': 14, '小四 (12pt)': 12,
@@ -22,6 +36,7 @@ DEFAULT_CONFIG = {
     'left_indent_cm': 0.0, 'right_indent_cm': 0.0,
     'enable_first_line_indent': True, 'first_line_indent_chars': 2.0,
     'first_line_indent_tolerance_chars': 0.2, 'first_line_indent_scope': 'body_only',
+    'ui_scale': 1.0, 'remember_window_geometry': True,
     'set_outline': True, 'enable_attachment_formatting': True,
     'force_a4': False, 'use_custom_english_font': False, 'english_font': 'Times New Roman',
     'blank_line_mode': DEFAULT_BLANK_LINE_MODE, 'normalize_punctuation': False,

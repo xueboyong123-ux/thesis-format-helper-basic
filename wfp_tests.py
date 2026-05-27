@@ -24,7 +24,12 @@ from wfp_core import (
     check_first_line_indent,
     is_body_paragraph,
 )
-from wfp_gui import WordFormatterGUI
+from wfp_gui import (
+    WordFormatterGUI,
+    scale_geometry,
+    scale_px,
+    validate_ui_scale,
+)
 
 
 class TextNormalizationTests(unittest.TestCase):
@@ -306,6 +311,103 @@ class GUIFirstLineIndentConfigTests(unittest.TestCase):
                 self.app.save_config()
 
             self.assertFalse(output.exists())
+
+
+class GUIUiScaleConfigTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.message_patches = [
+            mock.patch("wfp_gui.messagebox.showinfo"),
+            mock.patch("wfp_gui.messagebox.showerror"),
+            mock.patch("wfp_gui.messagebox.showwarning"),
+        ]
+        for patcher in self.message_patches:
+            patcher.start()
+        self.app = WordFormatterGUI(self.root)
+
+    def tearDown(self):
+        for patcher in reversed(self.message_patches):
+            patcher.stop()
+        self.root.destroy()
+
+    def test_ui_scale_defaults_initialize(self):
+        self.assertEqual(DEFAULT_CONFIG["ui_scale"], 1.0)
+        self.assertTrue(DEFAULT_CONFIG["remember_window_geometry"])
+        self.assertEqual(self.app.ui_scale_var.get(), "100%")
+        self.assertTrue(self.app.remember_window_geometry_var.get())
+
+    def test_old_config_load_uses_ui_scale_defaults(self):
+        old_config = DEFAULT_CONFIG.copy()
+        old_config.pop("ui_scale", None)
+        old_config.pop("remember_window_geometry", None)
+
+        self.app._apply_config(old_config)
+        collected = self.app.collect_config()
+
+        self.assertEqual(collected["ui_scale"], 1.0)
+        self.assertTrue(collected["remember_window_geometry"])
+
+    def test_invalid_ui_scale_falls_back_to_default(self):
+        self.assertEqual(validate_ui_scale("2.0"), 1.0)
+        self.app._apply_config({**DEFAULT_CONFIG, "ui_scale": 2.0})
+
+        self.assertEqual(self.app.collect_config()["ui_scale"], 1.0)
+        self.assertEqual(self.app.ui_scale_var.get(), "100%")
+
+    def test_scale_helpers_return_reasonable_sizes(self):
+        self.assertEqual(scale_px(100, 1.25), 125)
+        self.assertEqual(scale_geometry(1200, 860, 1.25), (1500, 1075))
+
+    def test_save_config_includes_ui_scale(self):
+        with tempfile.TemporaryDirectory(prefix="wfp_gui_config_") as tmpdir:
+            output = Path(tmpdir) / "config.json"
+            self.app.ui_scale_var.set("125%")
+            self.app.remember_window_geometry_var.set(False)
+            with mock.patch("wfp_gui.filedialog.asksaveasfilename", return_value=str(output)):
+                self.app.save_config()
+
+            saved = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(saved["ui_scale"], 1.25)
+        self.assertFalse(saved["remember_window_geometry"])
+
+    def test_load_config_restores_ui_scale(self):
+        self.app._apply_config({**DEFAULT_CONFIG, "ui_scale": 1.5, "remember_window_geometry": False})
+
+        self.assertEqual(self.app.collect_config()["ui_scale"], 1.5)
+        self.assertEqual(self.app.ui_scale_var.get(), "150%")
+        self.assertFalse(self.app.remember_window_geometry_var.get())
+
+
+class UiScaleFormattingIsolationTests(unittest.TestCase):
+    def test_ui_scale_does_not_change_word_formatting_defaults(self):
+        baseline = DEFAULT_CONFIG.copy()
+        scaled = DEFAULT_CONFIG.copy()
+        scaled["ui_scale"] = 1.5
+
+        word_formatting_keys = [
+            "title_size",
+            "h1_size",
+            "h2_size",
+            "body_size",
+            "page_number_size",
+            "table_caption_size",
+            "figure_caption_size",
+            "attachment_size",
+            "subtitle_size",
+            "margin_top",
+            "margin_bottom",
+            "margin_left",
+            "margin_right",
+            "line_spacing",
+            "first_line_indent_chars",
+            "table_size",
+            "table_line_spacing",
+        ]
+
+        for key in word_formatting_keys:
+            self.assertEqual(scaled[key], baseline[key])
 
 
 class TempAndConversionTests(unittest.TestCase):

@@ -10,7 +10,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from wfp_config import DEFAULT_CONFIG, FONT_SIZE_MAP
+from wfp_config import DEFAULT_CONFIG, FONT_SIZE_MAP, validate_ui_scale
 from wfp_core import (
     BLANK_LINE_MODE_OPTIONS,
     LegacyConversionUnavailable,
@@ -165,6 +165,7 @@ def normalize_config(config):
         value = merged.get(key)
         if value is None or (isinstance(value, str) and not value.strip()):
             merged[key] = default_value
+    merged["ui_scale"] = validate_ui_scale(merged.get("ui_scale"))
     return merged
 
 
