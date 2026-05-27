@@ -18,6 +18,8 @@ from wfp_core import (
     BLANK_LINE_MODE_PRESERVE,
     LegacyConversionUnavailable,
     WordProcessor,
+    check_first_line_indent,
+    is_body_paragraph,
 )
 
 
@@ -147,6 +149,78 @@ class OoxmlProtectionTests(unittest.TestCase):
         self.assertTrue(WordProcessor._has_field_codes(para))
         self.assertEqual(len(para.runs), 2)
         self.assertEqual(para.text, "正文")
+
+
+class FirstLineIndentTests(unittest.TestCase):
+    def _format_doc(self, paragraphs, config=None, table_text=None):
+        with tempfile.TemporaryDirectory(prefix="wfp_indent_test_") as tmpdir:
+            source = Path(tmpdir) / "source.docx"
+            output = Path(tmpdir) / "output.docx"
+            doc = Document()
+            for text in paragraphs:
+                doc.add_paragraph(text)
+            if table_text is not None:
+                table = doc.add_table(rows=1, cols=1)
+                table.cell(0, 0).text = table_text
+            doc.save(source)
+
+            merged_config = DEFAULT_CONFIG.copy()
+            if config:
+                merged_config.update(config)
+            WordProcessor(merged_config).format_document(str(source), str(output))
+            return Document(output)
+
+    def test_body_paragraph_gets_first_line_indent(self):
+        output = self._format_doc(["这是一个普通正文段落，用于验证首行缩进。"])
+
+        self.assertTrue(check_first_line_indent(output.paragraphs[0], 2.0, 0.2))
+
+    def test_h1_paragraph_does_not_get_first_line_indent(self):
+        output = self._format_doc(["一、绪论"])
+
+        self.assertFalse(check_first_line_indent(output.paragraphs[0], 2.0, 0.2))
+
+    def test_h2_paragraph_does_not_get_first_line_indent(self):
+        output = self._format_doc(["（一）研究背景"])
+
+        self.assertFalse(check_first_line_indent(output.paragraphs[0], 2.0, 0.2))
+
+    def test_figure_caption_does_not_get_first_line_indent(self):
+        output = self._format_doc(["图 1 系统结构图"])
+
+        self.assertFalse(check_first_line_indent(output.paragraphs[0], 2.0, 0.2))
+
+    def test_table_caption_does_not_get_first_line_indent(self):
+        output = self._format_doc(["表 1 实验结果"])
+
+        self.assertFalse(check_first_line_indent(output.paragraphs[0], 2.0, 0.2))
+
+    def test_reference_entry_does_not_get_first_line_indent(self):
+        output = self._format_doc(["[1] 张三. 文献标题. 期刊, 2024."])
+
+        self.assertFalse(check_first_line_indent(output.paragraphs[0], 2.0, 0.2))
+
+    def test_table_cell_paragraph_is_not_body_paragraph(self):
+        doc = Document()
+        table = doc.add_table(rows=1, cols=1)
+        para = table.cell(0, 0).paragraphs[0]
+        para.text = "表格内正文"
+
+        self.assertFalse(is_body_paragraph(para))
+
+    def test_old_config_without_first_line_indent_fields_is_compatible(self):
+        old_config = DEFAULT_CONFIG.copy()
+        for key in (
+            "enable_first_line_indent",
+            "first_line_indent_chars",
+            "first_line_indent_tolerance_chars",
+            "first_line_indent_scope",
+        ):
+            old_config.pop(key, None)
+
+        output = self._format_doc(["旧配置正文段落。"], config=old_config)
+
+        self.assertTrue(check_first_line_indent(output.paragraphs[0], 2.0, 0.2))
 
 
 class TempAndConversionTests(unittest.TestCase):

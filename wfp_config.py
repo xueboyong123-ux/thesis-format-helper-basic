@@ -20,6 +20,8 @@ DEFAULT_CONFIG = {
     'table_caption_size': 14, 'figure_caption_size': 14, 'attachment_size': 16,
     'subtitle_size': 16, 'title_line_spacing': 33, 'subtitle_line_spacing': 33,
     'left_indent_cm': 0.0, 'right_indent_cm': 0.0,
+    'enable_first_line_indent': True, 'first_line_indent_chars': 2.0,
+    'first_line_indent_tolerance_chars': 0.2, 'first_line_indent_scope': 'body_only',
     'set_outline': True, 'enable_attachment_formatting': True,
     'force_a4': False, 'use_custom_english_font': False, 'english_font': 'Times New Roman',
     'blank_line_mode': DEFAULT_BLANK_LINE_MODE, 'normalize_punctuation': False,

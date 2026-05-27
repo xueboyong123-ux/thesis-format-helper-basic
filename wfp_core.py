@@ -86,6 +86,148 @@ RE_HEADING_H3 = re.compile(r'^\d+\s*[\.．]')
 RE_HEADING_H4 = re.compile(r'^[（\(]\d+[）\)]')
 RE_ATTACHMENT = re.compile(r'^附件\s*(\d+|[一二三四五六七八九十百千万零]+)?\s*[:：]?$')
 RE_H2_INLINE_TITLE = re.compile(r'^[（\(](.+?)[）\)](.*)', re.DOTALL)
+RE_CAPTION = re.compile(r'^(图|表)\s*[\d一二三四五六七八九十百千万零]+(?:[\s\.．、:：-]|$)')
+RE_REFERENCE_TITLE = re.compile(r'^(参考文献|References?)$', re.IGNORECASE)
+RE_REFERENCE_ENTRY = re.compile(r'^(?:\[\d+\]|［\d+］)')
+RE_TOC_TITLE = re.compile(r'^(目录|目\s*录|Contents?)$', re.IGNORECASE)
+RE_TOC_ENTRY = re.compile(r'.+(?:\.{3,}|…{2,}|·{3,})\s*\d+\s*$')
+RE_EQUATION_TEXT = re.compile(r'^[\(\[]?\d*[\)\]]?\s*[A-Za-z0-9_{}\^\+\-\*/=<>≤≥×÷∑√πα-ωΑ-Ω\s]+$')
+
+
+def _paragraph_text(paragraph):
+    return (getattr(paragraph, 'text', '') or '').strip()
+
+
+def _paragraph_ind(paragraph):
+    pPr = paragraph._p.pPr
+    if pPr is None:
+        return None
+    return pPr.ind
+
+
+def _paragraph_in_table(paragraph):
+    return isinstance(getattr(paragraph, '_parent', None), _Cell)
+
+
+def _clear_first_line_indent_chars(paragraph):
+    paragraph.paragraph_format.first_line_indent = None
+    ind = paragraph._p.get_or_add_pPr().get_or_add_ind()
+    for attr in ('w:firstLine', 'w:firstLineChars', 'w:hanging', 'w:hangingChars'):
+        ind.attrib.pop(qn(attr), None)
+
+
+def is_heading_paragraph(paragraph):
+    text = _paragraph_text(paragraph)
+    if not text:
+        return False
+    if (
+        RE_HEADING_H1.match(text)
+        or RE_HEADING_H2.match(text)
+        or RE_HEADING_H3.match(text)
+        or RE_HEADING_H4.match(text)
+    ):
+        return True
+
+    style_name = getattr(getattr(paragraph, 'style', None), 'name', '') or ''
+    if style_name.lower().startswith('heading'):
+        return True
+
+    pPr = paragraph._p.pPr
+    return pPr is not None and pPr.find(qn('w:outlineLvl')) is not None
+
+
+def is_caption_paragraph(paragraph):
+    return bool(RE_CAPTION.match(_paragraph_text(paragraph)))
+
+
+def is_reference_paragraph(paragraph, context=None):
+    context = context or {}
+    text = _paragraph_text(paragraph)
+    if not text:
+        return False
+    return (
+        bool(context.get('in_reference_section'))
+        or bool(RE_REFERENCE_TITLE.match(text))
+        or bool(RE_REFERENCE_ENTRY.match(text))
+    )
+
+
+def is_toc_paragraph(paragraph, context=None):
+    context = context or {}
+    text = _paragraph_text(paragraph)
+    if not text:
+        return False
+    if context.get('in_toc_section') or RE_TOC_TITLE.match(text) or RE_TOC_ENTRY.match(text):
+        return True
+    xml = paragraph._p.xml
+    return 'TOC' in xml and ('w:instrText' in xml or 'w:fldSimple' in xml)
+
+
+def is_equation_paragraph(paragraph):
+    text = _paragraph_text(paragraph)
+    if paragraph._p.find('.//' + qn('m:oMath')) is not None:
+        return True
+    if paragraph._p.find('.//' + qn('m:oMathPara')) is not None:
+        return True
+    if not text or RE_HAS_CHINESE.search(text):
+        return False
+    has_operator = any(op in text for op in ('=', '+', '-', '*', '/', '×', '÷', '≤', '≥', '∑', '√'))
+    return (
+        paragraph.alignment == WD_ALIGN_PARAGRAPH.CENTER
+        and has_operator
+        and len(text) <= 120
+        and bool(RE_EQUATION_TEXT.match(text))
+    )
+
+
+def is_body_paragraph(paragraph, context=None):
+    text = _paragraph_text(paragraph)
+    if not text or _paragraph_in_table(paragraph):
+        return False
+    if is_heading_paragraph(paragraph):
+        return False
+    if is_caption_paragraph(paragraph):
+        return False
+    if is_reference_paragraph(paragraph, context):
+        return False
+    if is_toc_paragraph(paragraph, context):
+        return False
+    if is_equation_paragraph(paragraph):
+        return False
+    if paragraph.alignment in (WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.RIGHT):
+        return False
+    return True
+
+
+def apply_first_line_indent_chars(paragraph, chars):
+    try:
+        chars = float(chars)
+    except (TypeError, ValueError):
+        chars = 2.0
+    chars = max(0.0, chars)
+
+    paragraph.paragraph_format.first_line_indent = None
+    ind = paragraph._p.get_or_add_pPr().get_or_add_ind()
+    ind.attrib.pop(qn('w:firstLine'), None)
+    ind.attrib.pop(qn('w:hanging'), None)
+    ind.attrib.pop(qn('w:hangingChars'), None)
+    ind.set(qn('w:firstLineChars'), str(int(round(chars * 100))))
+
+
+def check_first_line_indent(paragraph, target_chars, tolerance_chars):
+    ind = _paragraph_ind(paragraph)
+    if ind is None:
+        return False
+    value = ind.get(qn('w:firstLineChars'))
+    if value is None:
+        return False
+    try:
+        actual_chars = int(value) / 100.0
+        target_chars = float(target_chars)
+        tolerance_chars = float(tolerance_chars)
+    except (TypeError, ValueError):
+        return False
+    return abs(actual_chars - target_chars) <= tolerance_chars
 
 
 class LegacyConversionUnavailable(RuntimeError):
@@ -1059,7 +1201,7 @@ class WordProcessor:
         else:
             self._log(f"  > 大纲级别: 无 → Lv{level} (新设) - \"{text_preview}...\"")
 
-    def _apply_text_indent_and_align(self, para):
+    def _apply_text_indent_and_align(self, para, apply_first_line_indent=True):
         pf = para.paragraph_format
         # 清除 python-docx 层面的缩进
         pf.first_line_indent = None
@@ -1073,10 +1215,13 @@ class WordProcessor:
         # 清除可能残留的悬挂缩进
         ind.attrib.pop(qn('w:hanging'), None)
         ind.attrib.pop(qn('w:hangingChars'), None)
-        # 清除可能残留的固定值首行缩进（我们使用字符单位 firstLineChars）
         ind.attrib.pop(qn('w:firstLine'), None)
-        # 设置首行缩进 2 字符（200 = 2 × 100）
-        ind.set(qn("w:firstLineChars"), "200")
+        ind.attrib.pop(qn('w:firstLineChars'), None)
+        if apply_first_line_indent and self.config.get('enable_first_line_indent', True):
+            apply_first_line_indent_chars(
+                para,
+                self._config_float(self.config, 'first_line_indent_chars', 2.0),
+            )
         
         para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
@@ -1599,6 +1744,8 @@ class WordProcessor:
                 self._reset_pagination_properties(para)
 
         block_idx = 0
+        in_reference_section = False
+        in_toc_section = False
         while block_idx < len(all_blocks):
             block = all_blocks[block_idx]
             
@@ -1660,6 +1807,17 @@ class WordProcessor:
                 if RE_ATTACHMENT.match(text_to_check_stripped): is_attachment_candidate = True
             elif para.alignment in [WD_ALIGN_PARAGRAPH.LEFT, WD_ALIGN_PARAGRAPH.JUSTIFY, None] and RE_ATTACHMENT.match(text_to_check_stripped):
                 is_attachment_candidate = True
+
+            paragraph_context = {
+                'in_reference_section': in_reference_section,
+                'in_toc_section': in_toc_section,
+            }
+            if RE_REFERENCE_TITLE.match(text_to_check_stripped):
+                in_reference_section = True
+                paragraph_context['in_reference_section'] = True
+            if RE_TOC_TITLE.match(text_to_check_stripped):
+                in_toc_section = True
+                paragraph_context['in_toc_section'] = True
 
             if is_attachment_enabled and is_attachment_candidate:
                 self._log(f"段落 {current_block_num}: 附件标识 - \"{para_text_preview}...\"")
@@ -1741,13 +1899,36 @@ class WordProcessor:
                 
                 block_idx = next_idx
                 continue
-            
+
+            elif (
+                is_caption_paragraph(para)
+                or is_reference_paragraph(para, paragraph_context)
+                or is_toc_paragraph(para, paragraph_context)
+                or is_equation_paragraph(para)
+            ):
+                self._log(f"段落 {current_block_num}: 非正文段落 - \"{para_text_preview}...\"")
+                _clear_first_line_indent_chars(para)
+                if is_caption_paragraph(para):
+                    caption_kind = 'figure' if text_to_check_stripped.startswith('图') else 'table'
+                    self._apply_font_to_runs(
+                        para,
+                        self.config[f'{caption_kind}_caption_font'],
+                        self.config[f'{caption_kind}_caption_size'],
+                        set_color=apply_color,
+                    )
+                    para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                else:
+                    self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
+                self._reset_pagination_properties(para)
+                block_idx += 1
+                continue
+
             elif RE_HEADING_H1.match(text_to_check):
                 self._log(f"段落 {current_block_num}: 一级标题 - \"{para_text_preview}...\"")
                 self._strip_leading_whitespace(para)
                 self._format_heading(para, 1)
                 self._apply_font_to_runs(para, self.config['h1_font'], self.config['h1_size'], set_color=apply_color)
-                self._apply_text_indent_and_align(para)
+                self._apply_text_indent_and_align(para, apply_first_line_indent=False)
                 self._reset_pagination_properties(para)
 
             elif RE_HEADING_H2.match(text_to_check):
@@ -1806,7 +1987,7 @@ class WordProcessor:
                         char_count = run_end_pos
                     
                     self._format_heading(para, 2)
-                    self._apply_text_indent_and_align(para)
+                    self._apply_text_indent_and_align(para, apply_first_line_indent=False)
                     self._reset_pagination_properties(para)
 
                 else:
@@ -1816,7 +1997,7 @@ class WordProcessor:
                         for r in para.runs: r.text = r.text.replace('(', '（', 1).replace(')', '）', 1)
                     self._format_heading(para, 2)
                     self._apply_font_to_runs(para, self.config['h2_font'], self.config['h2_size'], set_color=apply_color)
-                    self._apply_text_indent_and_align(para)
+                    self._apply_text_indent_and_align(para, apply_first_line_indent=False)
                     self._reset_pagination_properties(para)
                     
             elif RE_HEADING_H3.match(text_to_check):
@@ -1824,7 +2005,7 @@ class WordProcessor:
                 self._strip_leading_whitespace(para)
                 self._format_heading(para, 3)
                 self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
-                self._apply_text_indent_and_align(para)
+                self._apply_text_indent_and_align(para, apply_first_line_indent=False)
                 self._reset_pagination_properties(para)
                 
             elif RE_HEADING_H4.match(text_to_check):
@@ -1832,7 +2013,7 @@ class WordProcessor:
                 self._strip_leading_whitespace(para)
                 self._format_heading(para, 4)
                 self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
-                self._apply_text_indent_and_align(para)
+                self._apply_text_indent_and_align(para, apply_first_line_indent=False)
                 self._reset_pagination_properties(para)
                 
             elif not is_from_txt:
@@ -1844,12 +2025,12 @@ class WordProcessor:
                 elif leading_space_count > 5:
                     self._log(f"段落 {current_block_num}: 正文 (保留前导空格) - \"{para_text_preview}...\"")
                     self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
-                    para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                    self._apply_text_indent_and_align(para)
                     self._reset_pagination_properties(para)
                 elif (para.paragraph_format.first_line_indent is None or para.paragraph_format.first_line_indent.pt == 0) and leading_space_count == 0:
                     self._log(f"段落 {current_block_num}: 正文 (保留0缩进) - \"{para_text_preview}...\"")
                     self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
-                    para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                    self._apply_text_indent_and_align(para)
                     self._reset_pagination_properties(para)
                 else:
                     self._log(f"段落 {current_block_num}: 正文 (应用标准缩进) - \"{para_text_preview}...\"")
