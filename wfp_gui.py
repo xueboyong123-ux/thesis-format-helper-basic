@@ -125,6 +125,10 @@ def apply_initial_ui_scaling(root, scale):
 
 class WordFormatterGUI:
     FIRST_LINE_INDENT_SCOPE_OPTIONS = ["body_only"]
+    DOCUMENT_MODE_OPTIONS = {
+        "普通文档": "general",
+        "论文模式": "thesis",
+    }
 
     def __init__(self, master):
         self.master = master
@@ -152,6 +156,13 @@ class WordFormatterGUI:
         self.use_custom_english_font_var = tk.BooleanVar(value=self.default_params['use_custom_english_font'])
         self.normalize_punctuation_var = tk.BooleanVar(value=self.default_params['normalize_punctuation'])
         self.enable_first_line_indent_var = tk.BooleanVar(value=self.default_params['enable_first_line_indent'])
+        self.document_mode_var = tk.StringVar(value="普通文档")
+        self.enable_thesis_structure_detection_var = tk.BooleanVar(value=self.default_params['enable_thesis_structure_detection'])
+        self.protect_toc_var = tk.BooleanVar(value=self.default_params['protect_toc'])
+        self.protect_references_var = tk.BooleanVar(value=self.default_params['protect_references'])
+        self.protect_captions_var = tk.BooleanVar(value=self.default_params['protect_captions'])
+        self.protect_equations_var = tk.BooleanVar(value=self.default_params['protect_equations'])
+        self.protect_table_text_var = tk.BooleanVar(value=self.default_params['protect_table_text'])
         self.enable_format_report = self.default_params['enable_format_report']
         self.report_level = self.default_params['report_level']
         self.ui_scale_var = tk.StringVar(value=_ui_scale_to_label(self.ui_scale))
@@ -527,6 +538,31 @@ class WordFormatterGUI:
         create_combo("首行缩进范围", 'first_line_indent_scope', self.FIRST_LINE_INDENT_SCOPE_OPTIONS, row, 0)
         row += 1
 
+        # Section: Thesis Mode
+        thesis_help = (
+            "开启论文模式后，会用保守规则识别摘要、目录、标题、图表题注、公式、参考文献和附录。\n"
+            "识别到的受保护段落不会应用正文首行缩进，避免误改论文结构。"
+        )
+        row = create_section_header("论文模式", thesis_help, row)
+        ttk.Label(params_frame, text="文档模式").grid(row=row, column=0, sticky=tk.W, padx=3, pady=2)
+        document_mode_combo = ttk.Combobox(
+            params_frame,
+            values=list(self.DOCUMENT_MODE_OPTIONS.keys()),
+            textvariable=self.document_mode_var,
+            state='readonly',
+            width=scale_px(15, s),
+        )
+        document_mode_combo.grid(row=row, column=1, sticky=tk.EW, padx=3, pady=2)
+        ttk.Checkbutton(params_frame, text="启用论文结构识别", variable=self.enable_thesis_structure_detection_var).grid(row=row, column=2, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        ttk.Checkbutton(params_frame, text="保护目录", variable=self.protect_toc_var).grid(row=row, column=4, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        row += 1
+        ttk.Checkbutton(params_frame, text="保护参考文献", variable=self.protect_references_var).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        ttk.Checkbutton(params_frame, text="保护图表题注", variable=self.protect_captions_var).grid(row=row, column=2, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        ttk.Checkbutton(params_frame, text="保护公式", variable=self.protect_equations_var).grid(row=row, column=4, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        row += 1
+        ttk.Checkbutton(params_frame, text="保护表格内文字", variable=self.protect_table_text_var).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        row += 1
+
         # Section: Table Content
         table_help = (
             "• 默认不启用表格自动调整，启用后才会调整表头/内容字体、字号、行距、行高、列宽和边框。\n"
@@ -755,6 +791,17 @@ class WordFormatterGUI:
         self.use_custom_english_font_var.set(loaded_config.get('use_custom_english_font', False))
         self.normalize_punctuation_var.set(loaded_config.get('normalize_punctuation', False))
         self.enable_first_line_indent_var.set(loaded_config.get('enable_first_line_indent', True))
+        document_mode = str(loaded_config.get('document_mode', 'general')).lower()
+        if loaded_config.get('thesis_mode_enabled', False):
+            document_mode = 'thesis'
+        mode_label = "论文模式" if document_mode == "thesis" else "普通文档"
+        self.document_mode_var.set(mode_label)
+        self.enable_thesis_structure_detection_var.set(loaded_config.get('enable_thesis_structure_detection', True))
+        self.protect_toc_var.set(loaded_config.get('protect_toc', True))
+        self.protect_references_var.set(loaded_config.get('protect_references', True))
+        self.protect_captions_var.set(loaded_config.get('protect_captions', True))
+        self.protect_equations_var.set(loaded_config.get('protect_equations', True))
+        self.protect_table_text_var.set(loaded_config.get('protect_table_text', True))
         self.enable_format_report = bool(loaded_config.get('enable_format_report', True))
         self.report_level = loaded_config.get('report_level', 'normal') or 'normal'
         loaded_config['ui_scale'] = validate_ui_scale(loaded_config.get('ui_scale'))
@@ -771,7 +818,10 @@ class WordFormatterGUI:
             'remove_blank_lines', 'normalize_punctuation',
             'enable_first_line_indent', 'remember_window_geometry',
             'enable_table_formatting', 'table_auto_col_width', 'table_header_bold',
-            'table_smart_align', 'table_unified_borders'
+            'table_smart_align', 'table_unified_borders',
+            'thesis_mode_enabled', 'protect_toc', 'protect_references',
+            'protect_captions', 'protect_equations', 'protect_table_text',
+            'enable_thesis_structure_detection'
         ]
         self._enable_dependent_widgets_for_config_load()
         for key, value in loaded_config.items():
@@ -812,6 +862,15 @@ class WordFormatterGUI:
         config['use_custom_english_font'] = self.use_custom_english_font_var.get()
         config['normalize_punctuation'] = self.normalize_punctuation_var.get()
         config['enable_first_line_indent'] = self.enable_first_line_indent_var.get()
+        document_mode = self.DOCUMENT_MODE_OPTIONS.get(self.document_mode_var.get(), 'general')
+        config['document_mode'] = document_mode
+        config['thesis_mode_enabled'] = document_mode == 'thesis'
+        config['enable_thesis_structure_detection'] = self.enable_thesis_structure_detection_var.get()
+        config['protect_toc'] = self.protect_toc_var.get()
+        config['protect_references'] = self.protect_references_var.get()
+        config['protect_captions'] = self.protect_captions_var.get()
+        config['protect_equations'] = self.protect_equations_var.get()
+        config['protect_table_text'] = self.protect_table_text_var.get()
         config['enable_format_report'] = self.enable_format_report
         config['report_level'] = self.report_level
         config['ui_scale'] = _ui_scale_from_label(self.ui_scale_var.get())
@@ -863,6 +922,10 @@ class WordFormatterGUI:
         )
         if scope not in self.FIRST_LINE_INDENT_SCOPE_OPTIONS:
             self._show_config_validation_error("首行缩进范围目前只允许 body_only。")
+            return False
+        document_mode = config.get('document_mode', 'general')
+        if document_mode not in ('general', 'thesis'):
+            self._show_config_validation_error("文档模式目前只允许 general 或 thesis。")
             return False
         config['ui_scale'] = validate_ui_scale(config.get('ui_scale'))
         return True
