@@ -34,6 +34,8 @@ from wfp_core import (
 )
 
 class WordFormatterGUI:
+    FIRST_LINE_INDENT_SCOPE_OPTIONS = ["body_only"]
+
     def __init__(self, master):
         self.master = master
         master.title("Word文档智能排版工具 v2.7.4")
@@ -56,6 +58,7 @@ class WordFormatterGUI:
         self.force_a4_var = tk.BooleanVar(value=self.default_params['force_a4'])
         self.use_custom_english_font_var = tk.BooleanVar(value=self.default_params['use_custom_english_font'])
         self.normalize_punctuation_var = tk.BooleanVar(value=self.default_params['normalize_punctuation'])
+        self.enable_first_line_indent_var = tk.BooleanVar(value=self.default_params['enable_first_line_indent'])
         self.enable_table_var = tk.BooleanVar(value=self.default_params['enable_table_formatting'])
         self.table_auto_col_width_var = tk.BooleanVar(value=self.default_params['table_auto_col_width'])
         self.table_header_bold_var = tk.BooleanVar(value=self.default_params['table_header_bold'])
@@ -393,6 +396,12 @@ class WordFormatterGUI:
         create_entry("段落左缩进(cm)", 'left_indent_cm', row, 0)
         create_entry("段落右缩进(cm)", 'right_indent_cm', row, 2)
         row += 1
+        ttk.Checkbutton(params_frame, text="启用正文首行缩进", variable=self.enable_first_line_indent_var).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        create_entry("正文首行缩进(字符)", 'first_line_indent_chars', row, 2)
+        create_entry("首行缩进允许误差(字符)", 'first_line_indent_tolerance_chars', row, 4)
+        row += 1
+        create_combo("首行缩进范围", 'first_line_indent_scope', self.FIRST_LINE_INDENT_SCOPE_OPTIONS, row, 0)
+        row += 1
 
         # Section: Table Content
         table_help = (
@@ -597,6 +606,7 @@ class WordFormatterGUI:
         self.force_a4_var.set(loaded_config.get('force_a4', False))
         self.use_custom_english_font_var.set(loaded_config.get('use_custom_english_font', False))
         self.normalize_punctuation_var.set(loaded_config.get('normalize_punctuation', False))
+        self.enable_first_line_indent_var.set(loaded_config.get('enable_first_line_indent', True))
         self.enable_table_var.set(loaded_config.get('enable_table_formatting', False))
         self.table_auto_col_width_var.set(loaded_config.get('table_auto_col_width', True))
         self.table_header_bold_var.set(loaded_config.get('table_header_bold', True))
@@ -606,6 +616,7 @@ class WordFormatterGUI:
             'set_outline', 'enable_attachment_formatting', 'force_a4',
             'use_custom_english_font', 'use_times_new_roman',
             'remove_blank_lines', 'normalize_punctuation',
+            'enable_first_line_indent',
             'enable_table_formatting', 'table_auto_col_width', 'table_header_bold',
             'table_smart_align', 'table_unified_borders'
         ]
@@ -647,6 +658,7 @@ class WordFormatterGUI:
         config['force_a4'] = self.force_a4_var.get()
         config['use_custom_english_font'] = self.use_custom_english_font_var.get()
         config['normalize_punctuation'] = self.normalize_punctuation_var.get()
+        config['enable_first_line_indent'] = self.enable_first_line_indent_var.get()
         config['enable_table_formatting'] = self.enable_table_var.get()
         config['table_auto_col_width'] = self.table_auto_col_width_var.get()
         config['table_header_bold'] = self.table_header_bold_var.get()
@@ -654,16 +666,65 @@ class WordFormatterGUI:
         config['table_unified_borders'] = self.table_unified_borders_var.get()
         return config
 
+    def _show_config_validation_error(self, message):
+        self.log_to_debug_window(f"配置校验失败: {message}")
+        try:
+            messagebox.showwarning("配置校验失败", message, parent=self.master)
+        except tk.TclError:
+            pass
+
+    def validate_config(self, config):
+        try:
+            indent_chars = float(config.get(
+                'first_line_indent_chars',
+                self.default_params['first_line_indent_chars']
+            ))
+        except (TypeError, ValueError):
+            self._show_config_validation_error("正文首行缩进(字符)必须是 0 到 5 之间的数字。")
+            return False
+        if not 0 <= indent_chars <= 5:
+            self._show_config_validation_error("正文首行缩进(字符)必须是 0 到 5 之间的数字。")
+            return False
+        config['first_line_indent_chars'] = indent_chars
+
+        try:
+            tolerance_chars = float(config.get(
+                'first_line_indent_tolerance_chars',
+                self.default_params['first_line_indent_tolerance_chars']
+            ))
+        except (TypeError, ValueError):
+            self._show_config_validation_error("首行缩进允许误差(字符)必须是 0 到 1 之间的数字。")
+            return False
+        if not 0 <= tolerance_chars <= 1:
+            self._show_config_validation_error("首行缩进允许误差(字符)必须是 0 到 1 之间的数字。")
+            return False
+        config['first_line_indent_tolerance_chars'] = tolerance_chars
+
+        scope = config.get(
+            'first_line_indent_scope',
+            self.default_params['first_line_indent_scope']
+        )
+        if scope not in self.FIRST_LINE_INDENT_SCOPE_OPTIONS:
+            self._show_config_validation_error("首行缩进范围目前只允许 body_only。")
+            return False
+        return True
+
     def save_config(self):
+        config = self.collect_config()
+        if not self.validate_config(config):
+            return
         file_path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON files", "*.json")])
         if file_path:
-            with open(file_path, 'w', encoding='utf-8') as f: json.dump(self.collect_config(), f, ensure_ascii=False, indent=4)
+            with open(file_path, 'w', encoding='utf-8') as f: json.dump(config, f, ensure_ascii=False, indent=4)
             messagebox.showinfo("成功", f"配置已保存至 {file_path}")
-    
+
     def save_default_config(self):
+        config = self.collect_config()
+        if not self.validate_config(config):
+            return
         try:
             with open(self.default_config_path, 'w', encoding='utf-8') as f:
-                json.dump(self.collect_config(), f, ensure_ascii=False, indent=4)
+                json.dump(config, f, ensure_ascii=False, indent=4)
             messagebox.showinfo("成功", f"当前配置已保存为默认配置。\n下次启动软件时将自动加载。")
         except Exception as e:
             messagebox.showerror("错误", f"保存默认配置失败: {e}")
@@ -817,6 +878,10 @@ Word文档智能排版工具 v2.7.4 - 使用说明
             messagebox.showinfo("提示", "正在处理中，请稍候...", parent=self.master)
             return
 
+        collected_config = self.collect_config()
+        if not self.validate_config(collected_config):
+            return
+
         warning_title = "处理前重要提示"
         if IS_WINDOWS:
             warning_message = (
@@ -835,7 +900,6 @@ Word文档智能排版工具 v2.7.4 - 使用说明
             return
 
         active_tab_index = self.notebook.index(self.notebook.select())
-        collected_config = self.collect_config()
         file_list = []
         text_content = ""
         output_dir = None

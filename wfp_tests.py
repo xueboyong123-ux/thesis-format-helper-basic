@@ -6,7 +6,10 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+import json
+import tkinter as tk
 from pathlib import Path
+from unittest import mock
 
 from docx import Document
 from docx.oxml import OxmlElement
@@ -21,6 +24,7 @@ from wfp_core import (
     check_first_line_indent,
     is_body_paragraph,
 )
+from wfp_gui import WordFormatterGUI
 
 
 class TextNormalizationTests(unittest.TestCase):
@@ -221,6 +225,87 @@ class FirstLineIndentTests(unittest.TestCase):
         output = self._format_doc(["旧配置正文段落。"], config=old_config)
 
         self.assertTrue(check_first_line_indent(output.paragraphs[0], 2.0, 0.2))
+
+
+class GUIFirstLineIndentConfigTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.message_patches = [
+            mock.patch("wfp_gui.messagebox.showinfo"),
+            mock.patch("wfp_gui.messagebox.showerror"),
+            mock.patch("wfp_gui.messagebox.showwarning"),
+        ]
+        for patcher in self.message_patches:
+            patcher.start()
+        self.app = WordFormatterGUI(self.root)
+
+    def tearDown(self):
+        for patcher in reversed(self.message_patches):
+            patcher.stop()
+        self.root.destroy()
+
+    def _entry_value(self, key):
+        return self.app.entries[key].get().strip()
+
+    def test_gui_first_line_indent_defaults_initialize(self):
+        self.assertTrue(self.app.enable_first_line_indent_var.get())
+        self.assertEqual(self._entry_value("first_line_indent_chars"), "2.0")
+        self.assertEqual(self._entry_value("first_line_indent_tolerance_chars"), "0.2")
+        self.assertEqual(self._entry_value("first_line_indent_scope"), "body_only")
+
+    def test_save_config_includes_first_line_indent_fields(self):
+        with tempfile.TemporaryDirectory(prefix="wfp_gui_config_") as tmpdir:
+            output = Path(tmpdir) / "config.json"
+            with mock.patch("wfp_gui.filedialog.asksaveasfilename", return_value=str(output)):
+                self.app.save_config()
+
+            saved = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertTrue(saved["enable_first_line_indent"])
+        self.assertEqual(saved["first_line_indent_chars"], 2.0)
+        self.assertEqual(saved["first_line_indent_tolerance_chars"], 0.2)
+        self.assertEqual(saved["first_line_indent_scope"], "body_only")
+
+    def test_old_config_load_uses_first_line_indent_defaults(self):
+        old_config = DEFAULT_CONFIG.copy()
+        for key in (
+            "enable_first_line_indent",
+            "first_line_indent_chars",
+            "first_line_indent_tolerance_chars",
+            "first_line_indent_scope",
+        ):
+            old_config.pop(key, None)
+
+        self.app._apply_config(old_config)
+        collected = self.app.collect_config()
+
+        self.assertTrue(collected["enable_first_line_indent"])
+        self.assertEqual(collected["first_line_indent_chars"], 2.0)
+        self.assertEqual(collected["first_line_indent_tolerance_chars"], 0.2)
+        self.assertEqual(collected["first_line_indent_scope"], "body_only")
+
+    def test_invalid_first_line_indent_chars_is_blocked_on_save(self):
+        self.app.entries["first_line_indent_chars"].delete(0, tk.END)
+        self.app.entries["first_line_indent_chars"].insert(0, "5.1")
+
+        with tempfile.TemporaryDirectory(prefix="wfp_gui_config_") as tmpdir:
+            output = Path(tmpdir) / "config.json"
+            with mock.patch("wfp_gui.filedialog.asksaveasfilename", return_value=str(output)):
+                self.app.save_config()
+
+            self.assertFalse(output.exists())
+
+    def test_invalid_first_line_indent_tolerance_is_blocked_on_save(self):
+        self.app.entries["first_line_indent_tolerance_chars"].delete(0, tk.END)
+        self.app.entries["first_line_indent_tolerance_chars"].insert(0, "1.1")
+
+        with tempfile.TemporaryDirectory(prefix="wfp_gui_config_") as tmpdir:
+            output = Path(tmpdir) / "config.json"
+            with mock.patch("wfp_gui.filedialog.asksaveasfilename", return_value=str(output)):
+                self.app.save_config()
+
+            self.assertFalse(output.exists())
 
 
 class TempAndConversionTests(unittest.TestCase):
