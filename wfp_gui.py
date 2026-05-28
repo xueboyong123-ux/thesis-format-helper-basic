@@ -157,6 +157,7 @@ class WordFormatterGUI:
         self.normalize_punctuation_var = tk.BooleanVar(value=self.default_params['normalize_punctuation'])
         self.enable_first_line_indent_var = tk.BooleanVar(value=self.default_params['enable_first_line_indent'])
         self.document_mode_var = tk.StringVar(value="普通文档")
+        self.enable_table_cell_body_indent_var = tk.BooleanVar(value=self.default_params['enable_table_cell_body_indent'])
         self.enable_thesis_structure_detection_var = tk.BooleanVar(value=self.default_params['enable_thesis_structure_detection'])
         self.protect_toc_var = tk.BooleanVar(value=self.default_params['protect_toc'])
         self.protect_references_var = tk.BooleanVar(value=self.default_params['protect_references'])
@@ -538,6 +539,9 @@ class WordFormatterGUI:
         create_combo("首行缩进范围", 'first_line_indent_scope', self.FIRST_LINE_INDENT_SCOPE_OPTIONS, row, 0)
         row += 1
 
+        ttk.Checkbutton(params_frame, text="允许表格内长正文首行缩进", variable=self.enable_table_cell_body_indent_var).grid(row=row - 1, column=2, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        create_entry("表格内正文最小字符数", 'table_cell_body_indent_min_chars', row - 1, 4)
+
         # Section: Thesis Mode
         thesis_help = (
             "开启论文模式后，会用保守规则识别摘要、目录、标题、图表题注、公式、参考文献和附录。\n"
@@ -791,6 +795,7 @@ class WordFormatterGUI:
         self.use_custom_english_font_var.set(loaded_config.get('use_custom_english_font', False))
         self.normalize_punctuation_var.set(loaded_config.get('normalize_punctuation', False))
         self.enable_first_line_indent_var.set(loaded_config.get('enable_first_line_indent', True))
+        self.enable_table_cell_body_indent_var.set(loaded_config.get('enable_table_cell_body_indent', True))
         document_mode = str(loaded_config.get('document_mode', 'general')).lower()
         if loaded_config.get('thesis_mode_enabled', False):
             document_mode = 'thesis'
@@ -817,6 +822,7 @@ class WordFormatterGUI:
             'use_custom_english_font', 'use_times_new_roman',
             'remove_blank_lines', 'normalize_punctuation',
             'enable_first_line_indent', 'remember_window_geometry',
+            'enable_table_cell_body_indent',
             'enable_table_formatting', 'table_auto_col_width', 'table_header_bold',
             'table_smart_align', 'table_unified_borders',
             'thesis_mode_enabled', 'protect_toc', 'protect_references',
@@ -862,6 +868,8 @@ class WordFormatterGUI:
         config['use_custom_english_font'] = self.use_custom_english_font_var.get()
         config['normalize_punctuation'] = self.normalize_punctuation_var.get()
         config['enable_first_line_indent'] = self.enable_first_line_indent_var.get()
+        config['enable_table_cell_body_indent'] = self.enable_table_cell_body_indent_var.get()
+        config['table_cell_body_indent_scope'] = self.default_params['table_cell_body_indent_scope']
         document_mode = self.DOCUMENT_MODE_OPTIONS.get(self.document_mode_var.get(), 'general')
         config['document_mode'] = document_mode
         config['thesis_mode_enabled'] = document_mode == 'thesis'
@@ -923,6 +931,21 @@ class WordFormatterGUI:
         if scope not in self.FIRST_LINE_INDENT_SCOPE_OPTIONS:
             self._show_config_validation_error("首行缩进范围目前只允许 body_only。")
             return False
+        config['first_line_indent_scope'] = scope
+
+        try:
+            table_min_chars = int(config.get(
+                'table_cell_body_indent_min_chars',
+                self.default_params['table_cell_body_indent_min_chars']
+            ))
+        except (TypeError, ValueError):
+            table_min_chars = self.default_params['table_cell_body_indent_min_chars']
+        if table_min_chars < 1:
+            table_min_chars = self.default_params['table_cell_body_indent_min_chars']
+        config['table_cell_body_indent_min_chars'] = table_min_chars
+        if config.get('table_cell_body_indent_scope') != 'long_text_only':
+            config['table_cell_body_indent_scope'] = self.default_params['table_cell_body_indent_scope']
+
         document_mode = config.get('document_mode', 'general')
         if document_mode not in ('general', 'thesis'):
             self._show_config_validation_error("文档模式目前只允许 general 或 thesis。")
@@ -1192,6 +1215,9 @@ Word文档智能排版工具 v2.7.4 - 使用说明
             f"检查表格：{report.total_tables}\n"
             f"识别正文段落：{report.body_paragraphs}\n"
             f"修复首行缩进：{report.first_line_indent_fixed}\n"
+            f"检测到表格内长正文段落数量：{report.table_cell_body_paragraphs_detected}\n"
+            f"修复表格内正文首行缩进数量：{report.table_cell_body_indent_fixed}\n"
+            f"跳过表格内短标签/标题数量：{report.table_cell_body_indent_skipped}\n"
             f"跳过目录段落：{report.skipped_toc_paragraphs}\n"
             f"跳过参考文献：{report.skipped_reference_paragraphs}\n"
             f"报告文件：{report.report_file or '未生成'}"

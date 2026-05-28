@@ -36,6 +36,8 @@ from wfp_core import (
     iter_block_items,
     is_body_paragraph,
     is_protected_thesis_paragraph,
+    is_table_cell_body_paragraph,
+    should_apply_first_line_indent,
     is_thesis_mode,
     parse_figure_caption_number,
     parse_table_caption_number,
@@ -247,6 +249,101 @@ class FirstLineIndentTests(unittest.TestCase):
         output = self._format_doc(["旧配置正文段落。"], config=old_config)
 
         self.assertTrue(check_first_line_indent(output.paragraphs[0], 2.0, 0.2))
+
+
+class TableCellBodyIndentTests(unittest.TestCase):
+    LONG_BODY = "本研究围绕开题报告表格模板中的正文段落展开，重点验证较长连续说明文字可以保留为正文并应用首行缩进。"
+
+    def _format_table_doc(self, table_texts, config=None):
+        with tempfile.TemporaryDirectory(prefix="wfp_table_body_indent_") as tmpdir:
+            source = Path(tmpdir) / "source.docx"
+            output = Path(tmpdir) / "output.docx"
+            doc = Document()
+            table = doc.add_table(rows=len(table_texts), cols=1)
+            for row_idx, text in enumerate(table_texts):
+                table.cell(row_idx, 0).text = text
+            doc.save(source)
+
+            merged_config = DEFAULT_CONFIG.copy()
+            merged_config.update({
+                "document_mode": "thesis",
+                "thesis_mode_enabled": True,
+                "enable_thesis_structure_detection": True,
+                "protect_table_text": True,
+            })
+            if config:
+                merged_config.update(config)
+            report = WordProcessor(merged_config).format_document(str(source), str(output))
+            return Document(output), report
+
+    def _table_para(self, text):
+        doc = Document()
+        table = doc.add_table(rows=1, cols=1)
+        para = table.cell(0, 0).paragraphs[0]
+        para.text = text
+        return para
+
+    def test_table_cell_short_labels_do_not_get_indent(self):
+        output, report = self._format_table_doc(["题目", "学生姓名"])
+
+        self.assertFalse(check_first_line_indent(output.tables[0].cell(0, 0).paragraphs[0], 2.0, 0.2))
+        self.assertFalse(check_first_line_indent(output.tables[0].cell(1, 0).paragraphs[0], 2.0, 0.2))
+        self.assertGreaterEqual(report.table_cell_body_indent_skipped, 2)
+
+    def test_table_cell_heading_does_not_get_indent(self):
+        output, _ = self._format_table_doc(["一、选题的目的意义"])
+
+        self.assertFalse(check_first_line_indent(output.tables[0].cell(0, 0).paragraphs[0], 2.0, 0.2))
+
+    def test_table_cell_long_body_gets_indent_with_table_protection_enabled(self):
+        output, report = self._format_table_doc([self.LONG_BODY])
+
+        self.assertTrue(check_first_line_indent(output.tables[0].cell(0, 0).paragraphs[0], 2.0, 0.2))
+        self.assertEqual(report.table_cell_body_paragraphs_detected, 1)
+        self.assertEqual(report.table_cell_body_indent_fixed, 1)
+
+    def test_table_cell_long_body_does_not_get_indent_when_disabled(self):
+        output, report = self._format_table_doc(
+            [self.LONG_BODY],
+            config={"enable_table_cell_body_indent": False},
+        )
+
+        self.assertFalse(check_first_line_indent(output.tables[0].cell(0, 0).paragraphs[0], 2.0, 0.2))
+        self.assertEqual(report.table_cell_body_paragraphs_detected, 0)
+
+    def test_non_body_table_content_is_conservative(self):
+        for text in (
+            "图1 系统结构图",
+            "表1 实验结果",
+            "[1] 张三. 文献标题. 期刊, 2024.",
+            "关键词：格式；论文；表格",
+            "目录........................1",
+        ):
+            para = self._table_para(text)
+            config = DEFAULT_CONFIG.copy()
+            self.assertFalse(is_table_cell_body_paragraph(para, {"config": config}, config))
+            self.assertFalse(should_apply_first_line_indent(para, {"config": config}, config))
+
+    def test_old_config_without_table_cell_indent_fields_is_compatible(self):
+        old_config = DEFAULT_CONFIG.copy()
+        for key in (
+            "enable_table_cell_body_indent",
+            "table_cell_body_indent_min_chars",
+            "table_cell_body_indent_scope",
+        ):
+            old_config.pop(key, None)
+
+        output, _ = self._format_table_doc([self.LONG_BODY], config=old_config)
+
+        self.assertTrue(check_first_line_indent(output.tables[0].cell(0, 0).paragraphs[0], 2.0, 0.2))
+
+    def test_format_report_counts_table_cell_body_indent(self):
+        _, report = self._format_table_doc(["题目", "一、选题的目的意义", self.LONG_BODY])
+
+        self.assertEqual(report.table_cell_body_paragraphs_detected, 1)
+        self.assertEqual(report.table_cell_body_indent_fixed, 1)
+        self.assertGreaterEqual(report.table_cell_body_indent_skipped, 2)
+        self.assertIn("检测到表格内长正文段落数量：1", report.to_text())
 
 
 class ThesisModeDetectionTests(unittest.TestCase):
@@ -712,6 +809,8 @@ class GUIFirstLineIndentConfigTests(unittest.TestCase):
         self.assertEqual(saved["first_line_indent_chars"], 2.0)
         self.assertEqual(saved["first_line_indent_tolerance_chars"], 0.2)
         self.assertEqual(saved["first_line_indent_scope"], "body_only")
+        self.assertTrue(saved["enable_table_cell_body_indent"])
+        self.assertEqual(saved["table_cell_body_indent_min_chars"], 25)
         self.assertTrue(saved["enable_format_report"])
         self.assertEqual(saved["report_level"], "normal")
 
@@ -744,6 +843,9 @@ class GUIFirstLineIndentConfigTests(unittest.TestCase):
             "first_line_indent_chars",
             "first_line_indent_tolerance_chars",
             "first_line_indent_scope",
+            "enable_table_cell_body_indent",
+            "table_cell_body_indent_min_chars",
+            "table_cell_body_indent_scope",
         ):
             old_config.pop(key, None)
 
@@ -754,6 +856,9 @@ class GUIFirstLineIndentConfigTests(unittest.TestCase):
         self.assertEqual(collected["first_line_indent_chars"], 2.0)
         self.assertEqual(collected["first_line_indent_tolerance_chars"], 0.2)
         self.assertEqual(collected["first_line_indent_scope"], "body_only")
+        self.assertTrue(collected["enable_table_cell_body_indent"])
+        self.assertEqual(collected["table_cell_body_indent_min_chars"], 25)
+        self.assertEqual(collected["table_cell_body_indent_scope"], "long_text_only")
         self.assertTrue(collected["enable_format_report"])
         self.assertEqual(collected["report_level"], "normal")
 
@@ -803,7 +908,17 @@ class GUIFirstLineIndentConfigTests(unittest.TestCase):
             with mock.patch("wfp_gui.filedialog.asksaveasfilename", return_value=str(output)):
                 self.app.save_config()
 
-            self.assertFalse(output.exists())
+        self.assertFalse(output.exists())
+
+    def test_invalid_table_cell_body_min_chars_falls_back_on_save(self):
+        self.app.entries["table_cell_body_indent_min_chars"].delete(0, tk.END)
+        self.app.entries["table_cell_body_indent_min_chars"].insert(0, "bad")
+
+        config = self.app.collect_config()
+
+        self.assertTrue(self.app.validate_config(config))
+        self.assertEqual(config["table_cell_body_indent_min_chars"], 25)
+        self.assertEqual(config["table_cell_body_indent_scope"], "long_text_only")
 
 
 class GUIUiScaleConfigTests(unittest.TestCase):

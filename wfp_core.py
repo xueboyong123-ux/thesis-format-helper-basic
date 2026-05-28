@@ -113,6 +113,13 @@ RE_THESIS_FIGURE_CAPTION = re.compile(r'^(?:图\s*\d+(?:[-.]\d+)*\s+\S+|Figure\s
 RE_THESIS_TABLE_CAPTION = re.compile(r'^(?:表\s*\d+(?:[-.]\d+)*\s+\S+|Table\s+\d+(?:[-.]\d+)*\s+\S+)', re.IGNORECASE)
 RE_THESIS_EQUATION_NUMBER = re.compile(r'^[（(]\s*\d+(?:[-.]\d+)*\s*[）)]$')
 RE_THESIS_EQUATION_TRAILING_NUMBER = re.compile(r'[（(]\s*\d+(?:[-.]\d+)*\s*[）)]$')
+RE_TABLE_CELL_BODY_HEADING = re.compile(
+    r'^(?:[一二三四五六七八九十]+、|\d+(?:\.\d+)*\s+|第[一二三四五六七八九十0-9]+章)'
+)
+TABLE_CELL_SHORT_LABELS = {
+    '题目', '学生姓名', '指导教师姓名', '指导教师', '专业', '学号', '职称',
+    '姓名', '学院', '班级', '年级', '日期', '签名',
+}
 CAPTION_NUMBER_SEP_PATTERN = r'[-.－]'
 CAPTION_SUBFIGURE_PATTERN = r'[\(（]\s*[A-Za-z]\s*[\)）]'
 RE_FIGURE_CAPTION_NUMBER = re.compile(
@@ -213,6 +220,19 @@ def normalize_caption_search_window(config):
 def normalize_caption_numbering_mode(config):
     mode = str((config or {}).get('caption_numbering_mode', 'auto')).lower()
     return mode if mode in ('auto', 'chapter', 'continuous') else 'auto'
+
+
+def normalize_table_cell_body_indent_min_chars(config):
+    try:
+        min_chars = int((config or {}).get('table_cell_body_indent_min_chars', 25))
+    except (TypeError, ValueError):
+        min_chars = 25
+    return min_chars if min_chars >= 1 else 25
+
+
+def normalize_table_cell_body_indent_scope(config):
+    scope = str((config or {}).get('table_cell_body_indent_scope', 'long_text_only')).lower()
+    return scope if scope == 'long_text_only' else 'long_text_only'
 
 
 def iter_block_items(parent):
@@ -760,10 +780,12 @@ def is_equation_paragraph(paragraph):
 
 def is_body_paragraph(paragraph, context=None):
     text = _paragraph_text(paragraph)
-    if not text or _paragraph_in_table(paragraph):
+    if not text:
         return False
     context = context or {}
     config = context.get('config') if isinstance(context, dict) else None
+    if _paragraph_in_table(paragraph):
+        return is_table_cell_body_paragraph(paragraph, context, config)
     if config and is_protected_thesis_paragraph(paragraph, context, config):
         return False
     if is_heading_paragraph(paragraph):
@@ -781,13 +803,63 @@ def is_body_paragraph(paragraph, context=None):
     return True
 
 
+def is_table_cell_body_paragraph(paragraph, context=None, config=None):
+    if not is_table_cell_paragraph(paragraph):
+        return False
+    config = config or (context.get('config') if isinstance(context, dict) else None) or {}
+    if not config.get('enable_table_cell_body_indent', True):
+        return False
+    if normalize_table_cell_body_indent_scope(config) != 'long_text_only':
+        return False
+
+    text = normalize_paragraph_text(_paragraph_text(paragraph))
+    if not text:
+        return False
+    if text in TABLE_CELL_SHORT_LABELS:
+        return False
+    if len(text) < normalize_table_cell_body_indent_min_chars(config):
+        return False
+    if not re.search(r'[。！？；.!?;]', text):
+        return False
+    if RE_TABLE_CELL_BODY_HEADING.match(text):
+        return False
+    if (
+        is_heading_paragraph(paragraph)
+        or is_caption_paragraph(paragraph)
+        or is_reference_paragraph(paragraph, context)
+        or is_toc_paragraph(paragraph, context)
+        or is_equation_paragraph(paragraph)
+        or RE_THESIS_KEYWORDS.match(text)
+    ):
+        return False
+    if paragraph.alignment in (WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.RIGHT):
+        return False
+    return True
+
+
+def should_apply_first_line_indent(paragraph, context=None, config=None):
+    config = config or (context.get('config') if isinstance(context, dict) else None) or {}
+    if not config.get('enable_first_line_indent', True):
+        return False
+    if is_table_cell_paragraph(paragraph):
+        return is_table_cell_body_paragraph(paragraph, context, config)
+    paragraph_context = dict(context or {})
+    if config and 'config' not in paragraph_context:
+        paragraph_context['config'] = config
+    return is_body_paragraph(paragraph, paragraph_context)
+
+
 def is_protected_thesis_paragraph(paragraph, context, config):
     if not is_thesis_mode(config) or not config.get('enable_thesis_structure_detection', True):
         return False
     section = context.get('last_section_type') if isinstance(context, dict) else None
     if not section:
         section = detect_thesis_section(paragraph, context)
-    if config.get('protect_table_text', True) and is_table_cell_paragraph(paragraph):
+    if (
+        config.get('protect_table_text', True)
+        and is_table_cell_paragraph(paragraph)
+        and not is_table_cell_body_paragraph(paragraph, context, config)
+    ):
         return True
     if config.get('protect_toc', True) and (section == 'toc' or is_toc_paragraph(paragraph, context)):
         return True
@@ -846,6 +918,9 @@ class FormatReport:
     headings_detected: int = 0
     captions_detected: int = 0
     first_line_indent_fixed: int = 0
+    table_cell_body_paragraphs_detected: int = 0
+    table_cell_body_indent_fixed: int = 0
+    table_cell_body_indent_skipped: int = 0
     headings_fixed: int = 0
     tables_fixed: int = 0
     captions_fixed: int = 0
@@ -917,6 +992,9 @@ class FormatReport:
             f"跳过目录段落：{self.skipped_toc_paragraphs}",
             f"跳过参考文献段落：{self.skipped_reference_paragraphs}",
             f"跳过表格内段落：{self.skipped_table_paragraphs}",
+            f"检测到表格内长正文段落数量：{self.table_cell_body_paragraphs_detected}",
+            f"修复表格内正文首行缩进数量：{self.table_cell_body_indent_fixed}",
+            f"跳过表格内短标签/标题数量：{self.table_cell_body_indent_skipped}",
         ]
         if self.thesis_mode_enabled:
             lines.extend([
@@ -2167,8 +2245,13 @@ class WordProcessor:
         except (TypeError, ValueError):
             return default
 
-    def _format_tables(self, doc, apply_color=True):
-        if not self.config.get('enable_table_formatting', False):
+    def _format_tables(self, doc, apply_color=True, report=None):
+        enable_table_formatting = self.config.get('enable_table_formatting', False)
+        enable_table_body_indent = (
+            self.config.get('enable_first_line_indent', True)
+            and self.config.get('enable_table_cell_body_indent', True)
+        )
+        if not enable_table_formatting and not enable_table_body_indent:
             self._log("表格自动调整未启用，跳过表格内容格式化。")
             return 0
 
@@ -2195,6 +2278,28 @@ class WordProcessor:
         self._log(f"开始格式化表格内容（共 {len(tables)} 个）...")
         for table_idx, table in enumerate(tables, start=1):
             self._log(f"  > 表格 {table_idx}: 调整宽度、行高、字体和单元格格式")
+            if not enable_table_formatting:
+                for row in table.rows:
+                    for cell in row.cells:
+                        for para in cell.paragraphs:
+                            if not para.text.strip():
+                                continue
+                            if is_table_cell_body_paragraph(para, {'config': self.config}, self.config):
+                                if report is not None:
+                                    report.table_cell_body_paragraphs_detected += 1
+                                if should_apply_first_line_indent(para, {'config': self.config}, self.config):
+                                    apply_first_line_indent_chars(
+                                        para,
+                                        self._config_float(self.config, 'first_line_indent_chars', 2.0),
+                                    )
+                                    if report is not None:
+                                        report.table_cell_body_indent_fixed += 1
+                                        report.first_line_indent_fixed += 1
+                                        report.body_paragraphs += 1
+                            elif report is not None:
+                                report.table_cell_body_indent_skipped += 1
+                continue
+
             table.autofit = not auto_col_width
             self._set_table_width_percent(table, width_percent)
             self._set_table_indent(table, 0)
@@ -2223,6 +2328,13 @@ class WordProcessor:
 
                     cell_text = ''.join(p.text for p in cell.paragraphs).strip()
                     for para in cell.paragraphs:
+                        is_table_body_para = is_table_cell_body_paragraph(para, {'config': self.config}, self.config)
+                        if para.text.strip() and report is not None:
+                            if is_table_body_para:
+                                report.table_cell_body_paragraphs_detected += 1
+                            else:
+                                report.table_cell_body_indent_skipped += 1
+
                         if para.text.strip():
                             for run in para.runs:
                                 font_name = table_header_font if row_idx == 0 else table_font
@@ -2230,7 +2342,17 @@ class WordProcessor:
                                 if row_idx == 0 and header_bold:
                                     run.font.bold = True
 
-                        para.paragraph_format.first_line_indent = Pt(0)
+                        if is_table_body_para and should_apply_first_line_indent(para, {'config': self.config}, self.config):
+                            apply_first_line_indent_chars(
+                                para,
+                                self._config_float(self.config, 'first_line_indent_chars', 2.0),
+                            )
+                            if report is not None:
+                                report.table_cell_body_indent_fixed += 1
+                                report.first_line_indent_fixed += 1
+                                report.body_paragraphs += 1
+                        else:
+                            para.paragraph_format.first_line_indent = Pt(0)
                         para.paragraph_format.space_before = Pt(0)
                         para.paragraph_format.space_after = Pt(0)
                         if table_line_spacing > 0:
@@ -2957,7 +3079,7 @@ class WordProcessor:
         audit_caption_numbers(doc, report, self.config)
         audit_cross_references(doc, report, self.config)
 
-        report.tables_fixed = self._format_tables(doc, apply_color=apply_color)
+        report.tables_fixed = self._format_tables(doc, apply_color=apply_color, report=report)
         self._apply_page_setup(doc, is_from_txt=is_from_txt)
         self._log("正在保存最终文档...")
         doc.save(output_path)

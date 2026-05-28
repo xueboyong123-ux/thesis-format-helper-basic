@@ -36,6 +36,8 @@ DEFAULT_CONFIG = {
     'left_indent_cm': 0.0, 'right_indent_cm': 0.0,
     'enable_first_line_indent': True, 'first_line_indent_chars': 2.0,
     'first_line_indent_tolerance_chars': 0.2, 'first_line_indent_scope': 'body_only',
+    'enable_table_cell_body_indent': True, 'table_cell_body_indent_min_chars': 25,
+    'table_cell_body_indent_scope': 'long_text_only',
     'ui_scale': 1.0, 'remember_window_geometry': True,
     'enable_format_report': True, 'report_level': 'normal',
     'document_mode': 'general', 'thesis_mode_enabled': False,
