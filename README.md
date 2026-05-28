@@ -29,8 +29,6 @@ Thesis Formatter Pro 基于 `cwyalpha/Word-Formatter-Pro` 二次开发。原项�
 -最新的软件样子：
  <img width="1248" height="1233" alt="QQ20260528-173734" src="https://github.com/user-attachments/assets/2f08ee08-1a30-4d94-90e7-6d4f422580ef" />
  
- ## 个人使用小技巧
- 可以让gpt给你生成j
 
 ## 使用软件后需要手动处理的内容
 
@@ -78,6 +76,7 @@ pip install -r requirements.txt
 
 ## 下载使用
 普通用户请前往 Releases 下载 Windows 版压缩包，解压后双击 exe 使用。
+
 https://github.com/xueboyong123-ux/thesis-format-helper-basic/releases/latest
 
 开发者可以 clone 源码后按下方方式安装依赖并运行 Python 入口。当前 exe 为未签名测试版，Windows 或杀毒软件可能弹出安全提示。
