@@ -74,12 +74,17 @@ python -m pip install -U pip
 pip install -r requirements.txt
 ```
 
-## 下载使用
-普通用户请前往 Releases 下载 Windows 版压缩包，解压后双击 exe 使用。
+# ⬇️ 下载使用（推荐普通用户）
 
+> [!IMPORTANT]
+> **普通用户请直接前往 Releases 下载 Windows 版本压缩包。**  
+> 解压后双击 `.exe` 即可使用。
+
+## 下载地址
 https://github.com/xueboyong123-ux/thesis-format-helper-basic/releases/latest
 
-开发者可以 clone 源码后按下方方式安装依赖并运行 Python 入口。当前 exe 为未签名测试版，Windows 或杀毒软件可能弹出安全提示。
+开发者可以 clone 源码后按下方方式安装依赖并运行 Python 入口。  
+当前 exe 为未签名测试版，Windows 或杀毒软件可能弹出安全提示。
 
 ## 已知限制摘要
 
