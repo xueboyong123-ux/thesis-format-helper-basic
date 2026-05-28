@@ -2,7 +2,6 @@
 
 > 论文格式辅助排版与检查工具，面向毕业论文、毕业设计说明书、课程论文和常规 Word 文档批量排版。
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Thesis Formatter Pro 基于 `cwyalpha/Word-Formatter-Pro` 二次开发。原项目采用 MIT License，本项目保留原作者版权声明和 [LICENSE](LICENSE)。本工具用于辅助统一 Word 文档格式、识别论文结构并生成格式检查报告，不承诺对所有学校模板做到一键完全合规。
 
@@ -27,6 +26,39 @@ Thesis Formatter Pro 基于 `cwyalpha/Word-Formatter-Pro` 二次开发。原项�
 - 论文结构识别
 - 目录、参考文献、图题、表题、公式、表格内文字保护
 - 图表题注、编号、位置与正文引用检查
+-最新的软件样子：
+ <img width="1248" height="1233" alt="QQ20260528-173734" src="https://github.com/user-attachments/assets/2f08ee08-1a30-4d94-90e7-6d4f422580ef" />
+ 
+ ## 个人使用小技巧
+ 可以让gpt给你生成j
+
+## 使用软件后需要手动处理的内容
+
+本工具可以辅助修改论文格式，但以下内容仍需要用户手动检查或修改：
+
+1. **目录和目录页码**：排版完成后，需要在 Word 或 WPS 中手动更新目录，确认标题层级和页码是否正确。
+
+2. **页码和分节**：封面、摘要、目录、正文的页码格式需要人工确认，尤其是正文是否从第 1 页开始。
+
+3. **页眉页脚**：学校要求的页眉内容、页脚页码、首页不同、奇偶页不同等设置需要人工检查。
+
+4. **封面和声明页**：封面、任务书、原创性声明、授权声明、签名栏等内容通常和学校模板有关，需要人工核对。
+
+5. **参考文献内容**：参考文献的作者、题名、年份、期刊、页码、DOI、网址等信息需要人工确认，软件不会自动保证文献内容完全合规。
+
+6. **图表编号**：软件可以检查图表编号重复、跳号或引用异常，但不会自动重写编号，需要用户根据报告手动修改。
+
+7. **正文交叉引用**：如“如图1-1所示”“见表2-1”等引用内容需要人工确认，软件不会自动同步修改正文引用。
+
+8. **浮动图片和复杂图形**：浮动图片、文本框图片、组合图形、SmartArt 等内容可能无法完整识别，需要人工检查图题、位置和编号。
+
+9. **复杂表格**：跨页表格、合并单元格、嵌套表格、三线表等复杂表格需要人工复核。
+
+10. **公式编号和公式排版**：公式编号、公式位置、公式是否右对齐、是否被压缩或错位，需要人工检查。
+
+11. **学校特殊要求**：不同学校、学院、专业的论文模板要求不同，最终需要按本校论文规范人工复核。
+
+使用前请先备份论文原件，建议先用副本测试，确认无误后再处理正式论文。
 
 ## 适用场景
 
@@ -35,12 +67,7 @@ Thesis Formatter Pro 基于 `cwyalpha/Word-Formatter-Pro` 二次开发。原项�
 - 课程论文
 - 常规 Word 文档批量排版
 
-## 环境要求
 
-- Python 3.x
-- 依赖见 [requirements.txt](requirements.txt)
-- Windows 下如需处理 `.doc`、`.wps`、修订或自动编号转换，建议安装 Microsoft Office 或 WPS Office
-- Linux、Kylin、macOS 下如需转换 `.doc`、`.wps`，建议安装 LibreOffice 并确保 `soffice` 可用
 
 ## 安装依赖
 
@@ -50,52 +77,10 @@ pip install -r requirements.txt
 ```
 
 ## 下载使用
-
-普通用户推荐下载 GitHub Release 中的 Windows zip 压缩包。解压后进入文件夹，双击 `论文格式修改助手.exe` 即可启动软件，不需要自行安装 Python。
+普通用户请前往 Releases 下载 Windows 版压缩包，解压后双击 exe 使用。
+https://github.com/xueboyong123-ux/thesis-format-helper-basic/releases/latest
 
 开发者可以 clone 源码后按下方方式安装依赖并运行 Python 入口。当前 exe 为未签名测试版，Windows 或杀毒软件可能弹出安全提示。
-
-## 使用流程
-
-1. 启动 GUI：
-
-   ```bash
-   python wfp.py
-   ```
-
-2. 加载 Word 文档。
-3. 选择论文模式。
-4. 设置正文首行缩进参数。
-5. 开始排版。
-6. 查看生成的格式检查报告。
-
-## CLI 简要用法
-
-```bash
-# 单文件排版
-python wfp_cli.py format -i input.docx
-
-# 多文件或目录批量处理
-python wfp_cli.py format -i input.docx -i ./documents -o ./formatted_output
-
-# 查看当前配置
-python wfp_cli.py show-config
-
-# 运行内置测试
-python wfp_cli.py test
-```
-
-## 示例配置
-
-通用论文推荐配置见 [sample_configs/thesis_general.json](sample_configs/thesis_general.json)。可根据学校模板要求复制后调整，再通过 GUI 加载配置或通过 CLI 参数使用。
-
-## 测试命令
-
-```bash
-python wfp.py --test
-python wfp_cli.py test
-python -m py_compile wfp_gui.py wfp_config.py wfp_core.py wfp_tests.py wfp.py wfp_cli.py
-```
 
 ## 已知限制摘要
 
@@ -107,15 +92,12 @@ python -m py_compile wfp_gui.py wfp_config.py wfp_core.py wfp_tests.py wfp.py wf
 - 不自动同步正文交叉引用。
 - 对浮动图片、文本框图片、组合图形识别有限。
 
-完整限制说明见 [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)。
 
 ## 发布检查
 
 发布前建议按 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) 逐项检查，确认测试、LICENSE、二次开发来源、缓存文件和输出文件清理情况。
 
-## 更新记录
 
-版本变化见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## License
 
